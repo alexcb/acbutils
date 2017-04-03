@@ -41,12 +41,13 @@ def interactive_wait(container_id):
     exit_code = subprocess.check_output('docker wait %s' % container_id, shell=True)
     yield None, int(exit_code)
 
-def run_container(network, host, image, env={}, vol={}, command=''):
+def run_container(network, host, image, env={}, vol={}, command='', detach=True):
 
     env = ' '.join('--env %s=%s' % (k, v) for k, v in env.iteritems())
     vol = ' '.join('-v %s:%s' % (k, v) for k, v in vol.iteritems())
 
-    cmd = "docker run -d --name %(name)s --net %(net)s --net-alias %(host)s --hostname %(host)s %(vol)s %(env)s %(image)s %(command)s" % {
+    cmd = "docker run %(detach)s --name %(name)s --net %(net)s --net-alias %(host)s --hostname %(host)s %(vol)s %(env)s %(image)s %(command)s" % {
+        'detach': '-d' if detach else '-ti --rm',
         'host': host,
         'name': host,
         'net': network,
@@ -55,6 +56,9 @@ def run_container(network, host, image, env={}, vol={}, command=''):
         'vol': vol,
         'command': command,
         }
-    print cmd
-    instance = subprocess.check_output(cmd, shell=True).strip()
-    return instance
+    if detach:
+        instance = subprocess.check_output(cmd, shell=True).strip()
+        return instance
+
+    instance = subprocess.check_call(cmd, shell=True)
+
