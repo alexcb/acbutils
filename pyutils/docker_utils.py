@@ -40,3 +40,21 @@ def interactive_wait(container_id):
 
     exit_code = subprocess.check_output('docker wait %s' % container_id, shell=True)
     yield None, int(exit_code)
+
+def run_container(network, host, image, env={}, vol={}, command=''):
+
+    env = ' '.join('--env %s=%s' % (k, v) for k, v in env.iteritems())
+    vol = ' '.join('-v %s:%s' % (k, v) for k, v in vol.iteritems())
+
+    cmd = "docker run -d --name %(name)s --net %(net)s --net-alias %(host)s --hostname %(host)s %(vol)s %(env)s %(image)s %(command)s" % {
+        'host': host,
+        'name': host,
+        'net': network,
+        'image': image,
+        'env': env,
+        'vol': vol,
+        'command': command,
+        }
+    print cmd
+    instance = subprocess.check_output(cmd, shell=True).strip()
+    return instance
