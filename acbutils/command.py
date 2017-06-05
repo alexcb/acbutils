@@ -27,48 +27,49 @@ class Command(object):
         args = parser.parse_args()
         return args.func(args)
 
-class LeafCommand(Command):
-    def __init__(self):
-        pass
-
-    def add_arguments(self, parser):
-        parser.add_argument('--last-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
-
-    def run(self, args):
-        print 'leaf was run'
-
-class OtherLeafCommand(Command):
-    def __init__(self):
-        pass
-
-    def add_arguments(self, parser):
-        parser.add_argument('--other-last-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
-        parser.add_argument('-c', '--cluster', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
-
-    def run(self, args):
-        print 'other was run, %s' % args.cluster
-
-class MiddleCommand(Command):
-    def __init__(self):
-        pass
-
-    def add_arguments(self, parser):
-        parser.add_argument('--middle-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
-        parser.add_command(LeafCommand())
-
-    def run(self, args):
-        assert 0
-
-class RootCommand(Command):
-    def __init__(self):
-        pass
-
-    def add_arguments(self, parser):
-        parser.add_argument('-c', '--cluster', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
-        parser.add_command(MiddleCommand())
-        parser.add_command(OtherLeafCommand())
 
 if __name__ == '__main__':
+    class LeafCommand(Command):
+        def __init__(self):
+            pass
+    
+        def add_arguments(self, parser):
+            parser.add_argument('--last-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
+    
+        def run(self, args):
+            print 'leaf was run'
+    
+    class OtherLeafCommand(Command):
+        def __init__(self):
+            pass
+    
+        def add_arguments(self, parser):
+            parser.add_argument('--other-last-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
+            parser.add_argument('-c', '--cluster', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
+    
+        def run(self, args):
+            print 'other was run, %s' % args.cluster
+    
+    class MiddleCommand(Command):
+        def __init__(self):
+            pass
+    
+        def add_arguments(self, parser):
+            parser.add_argument('--middle-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
+            parser.add_command(LeafCommand())
+    
+        def run(self, args):
+            assert 0
+    
+    class RootCommand(Command):
+        def __init__(self):
+            pass
+    
+        def add_arguments(self, parser):
+            parser.add_argument('-c', '--cluster', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
+            parser.add_command(MiddleCommand())
+            parser.add_command(OtherLeafCommand())
+  
     cmd = RootCommand()
     cmd.run()
 
