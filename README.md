@@ -1,4 +1,4 @@
-# pyutils
+# acbutils
 misc python utilities
 
-    pip install git+git://github.com/alexcb/pyutils.git@master
+    pip install git+git://github.com/alexcb/acbutils.git@master
