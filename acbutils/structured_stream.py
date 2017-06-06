@@ -53,3 +53,22 @@ class StructuredStream(object):
 
     def get_char(self):
         return chr(self.get_uint8())
+
+    def get_bytes(self, n):
+        x = self.stream.read(n)
+        if len(x) != n:
+            raise EOFError('wanted %d bytes; got %d' % (n, len(x)))
+        return x
+
+    def get_uint8_bytes(self):
+        n = self.get_uint8()
+        return self.get_bytes(n)
+
+    def get_uint16_bytes(self):
+        n = self.get_uint16()
+        return self.get_bytes(n)
+
+    def get_uint32_bytes(self):
+        n = self.get_uint32()
+        return self.get_bytes(n)
+
