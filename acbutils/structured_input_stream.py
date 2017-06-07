@@ -1,7 +1,7 @@
 import struct
 import cStringIO
 
-class StructuredStream(object):
+class StructuredInputStream(object):
     def __init__(self, stream, endian):
         if isinstance(stream, basestring):
             self.stream = cStringIO.StringIO(stream)
@@ -72,3 +72,10 @@ class StructuredStream(object):
         n = self.get_uint32()
         return self.get_bytes(n)
 
+    def get_uint64_bytes(self):
+        n = self.get_uint64()
+        return self.get_bytes(n)
+
+if __name__ == '__main__':
+    sos = StructuredInputStream('\xFE\x00\x00\x00', 'little')
+    print repr(sos.get_uint32())
