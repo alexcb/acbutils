@@ -1,5 +1,3 @@
-import itertools
-
 def grouper(n, iterable):
     '''grouper(3, "abcd") -> [['a', 'b', 'c'], ['d']]'''
     i = iter(iterable)
