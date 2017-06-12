@@ -11,8 +11,7 @@ class MyParser(object):
     def add_command(self, command):
         if self._subparsers is None:
             self._subparsers = self._parser.add_subparsers()
-        name = command.__class__.__name__
-        parser = self._subparsers.add_parser(name, help=command.__doc__)
+        parser = self._subparsers.add_parser(command.name(), help=command.__doc__)
         command.add_arguments(MyParser(parser))
         parser.set_defaults(func=command.run)
 
@@ -26,6 +25,9 @@ class Command(object):
         self.add_arguments(parser)
         args = parser.parse_args()
         return args.func(args)
+
+    def name(self):
+        return self.__class__.__name__
 
     def add_arguments(self, parser):
         pass
