@@ -27,6 +27,9 @@ class Command(object):
         args = parser.parse_args()
         return args.func(args)
 
+    def add_arguments(self, parser):
+        pass
+
 
 if __name__ == '__main__':
     class LeafCommand(Command):
