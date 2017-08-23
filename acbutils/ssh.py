@@ -46,3 +46,10 @@ def run_script_over_ssh_parallel(script, hosts, max_conn=4):
     p = multiprocessing.dummy.Pool(max_conn)
     return p.map(helper, [(script, x) for x in hosts])
 
+def run_scripts_over_ssh_parallel(script, hosts, max_conn=4):
+    assert len(script) == len(hosts)
+    def helper(args):
+        script, host = args
+        return run_script_over_ssh(script, host)
+    p = multiprocessing.dummy.Pool(max_conn)
+    return p.map(helper, zip(script, hosts))
