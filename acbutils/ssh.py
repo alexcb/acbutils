@@ -4,6 +4,7 @@ import os
 import subprocess
 import textwrap
 import zipfile
+import sys
 
 from .proc_utils import communicate_stream
 
@@ -46,7 +47,11 @@ def stream_script_over_ssh(script, host, sudo=False):
     cmd = ['ssh', host] + sudo_cmd + ['python', '-u', '-']
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     for linetype, line in communicate_stream(p, script):
-        print linetype, line
+        line += '\n'
+        if linetype == 1:
+            sys.stdout.write(line)
+        else:
+            sys.stderr.write(line)
     return p.poll()
 
 def run_script_over_ssh_parallel(script, hosts, sudo=False, max_conn=4):
