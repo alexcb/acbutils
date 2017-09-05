@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 import zipfile
 
+from .proc_utils import communicate_stream
 
 def build_remote_script(script, remotelib=None):
     buf = StringIO.StringIO()
