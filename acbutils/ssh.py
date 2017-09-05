@@ -40,6 +40,13 @@ def run_script_over_ssh(script, host, sudo=False):
     out = p.communicate(input=script)[0]
     return p.returncode, out.decode()
 
+def stream_script_over_ssh(script, host, sudo=False):
+    sudo_cmd = ['sudo'] if sudo else []
+    cmd = ['ssh', host] + sudo_cmd + ['python', '-u', '-']
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for linetype, line in communicate_stream(p, script):
+        print linetype, line
+    return p.poll()
 
 def run_script_over_ssh_parallel(script, hosts, sudo=False, max_conn=4):
     def helper(args):
