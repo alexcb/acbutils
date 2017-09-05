@@ -8,7 +8,7 @@ import sys
 
 from .proc_utils import communicate_stream
 
-def build_remote_script(script, remotelib=None):
+def build_remote_script(script, vars={}, remotelib=None):
     buf = StringIO.StringIO()
 
     zf = zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED, False)
@@ -26,13 +26,14 @@ def build_remote_script(script, remotelib=None):
         import tempfile
         import runpy
         
+        vars = %s
         data = %s
         
         with tempfile.NamedTemporaryFile(suffix='.zip') as f:
             f.write(data.decode('base64'))
             f.flush()
-            runpy.run_path(f.name)
-    ''' % data)
+            runpy.run_path(f.name, init_globals=vars)
+    ''' % (repr(vars), data))
 
 
 def run_script_over_ssh(script, host, sudo=False):
