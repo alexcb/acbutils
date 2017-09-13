@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 import zipfile
 import sys
+import functools
 
 from .proc_utils import communicate_stream
 
@@ -43,29 +44,26 @@ def run_script_over_ssh(script, host, sudo=False):
     out = p.communicate(input=script)[0]
     return p.returncode, out.decode()
 
-def stream_script_over_ssh(script, host, sudo=False):
+def run_scripts_over_ssh_parallel(scripts, hosts, sudo=False, max_conn=4):
+    assert len(scripts) == len(hosts)
+    def helper(args):
+        script, host = args
+        return run_script_over_ssh(script, host, sudo=sudo)
+    p = multiprocessing.dummy.Pool(max_conn)
+    return p.map(helper, zip(scripts, hosts))
+
+def stream_script_over_ssh(script, host, stream_callback, sudo=False):
     sudo_cmd = ['sudo'] if sudo else []
     cmd = ['ssh', host] + sudo_cmd + ['python', '-u', '-']
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     for linetype, line in communicate_stream(p, script):
-        line += '\n'
-        if linetype == 1:
-            sys.stdout.write(line)
-        else:
-            sys.stderr.write(line)
+        stream_callback(linetype, line)
     return p.poll()
 
-def run_script_over_ssh_parallel(script, hosts, sudo=False, max_conn=4):
+def stream_scripts_over_ssh_parallel(scripts, hosts, stream_callback, sudo=False, max_conn=4):
+    assert len(scripts) == len(hosts)
     def helper(args):
         script, host = args
-        return run_script_over_ssh(script, host, sudo=sudo)
+        return stream_script_over_ssh(script, host, functools.partial(stream_callback, host), sudo=sudo)
     p = multiprocessing.dummy.Pool(max_conn)
-    return p.map(helper, [(script, x) for x in hosts])
-
-def run_scripts_over_ssh_parallel(script, hosts, sudo=False, max_conn=4):
-    assert len(script) == len(hosts)
-    def helper(args):
-        script, host = args
-        return run_script_over_ssh(script, host, sudo=sudo)
-    p = multiprocessing.dummy.Pool(max_conn)
-    return p.map(helper, zip(script, hosts))
+    return p.map(helper, zip(scripts, hosts))
