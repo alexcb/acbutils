@@ -6,6 +6,8 @@ import textwrap
 import zipfile
 import sys
 import functools
+import time
+import random
 
 from .proc_utils import communicate_stream
 
@@ -37,22 +39,22 @@ def build_remote_script(script, vars={}, remotelib=None):
     ''' % (repr(vars), data))
 
 
-def run_script_over_ssh(script, host, sudo=False):
+def run_script_over_ssh(host, script, sudo=False):
     sudo_cmd = ['sudo'] if sudo else []
     cmd = ['ssh', host] + sudo_cmd + ['python', '-']
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.communicate(input=script)[0]
     return p.returncode, out.decode()
 
-def run_scripts_over_ssh_parallel(scripts, hosts, sudo=False, max_conn=4):
-    assert len(scripts) == len(hosts)
+def run_scripts_over_ssh_parallel(scripts, sudo=False, max_conn=4, rand_wait=5):
     def helper(args):
-        script, host = args
-        return run_script_over_ssh(script, host, sudo=sudo)
+        time.sleep(random.uniform(0, rand_wait)
+        host, script = args
+        return (host, run_script_over_ssh(host, script, sudo=sudo))
     p = multiprocessing.dummy.Pool(max_conn)
-    return p.map(helper, zip(scripts, hosts))
+    return dict(p.map(helper, scripts.items()))
 
-def stream_script_over_ssh(script, host, stream_callback, sudo=False):
+def stream_script_over_ssh(host, script, stream_callback, sudo=False):
     sudo_cmd = ['sudo'] if sudo else []
     cmd = ['ssh', host] + sudo_cmd + ['python', '-u', '-']
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -60,10 +62,10 @@ def stream_script_over_ssh(script, host, stream_callback, sudo=False):
         stream_callback(linetype, line)
     return p.poll()
 
-def stream_scripts_over_ssh_parallel(scripts, hosts, stream_callback, sudo=False, max_conn=4):
-    assert len(scripts) == len(hosts)
+def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, max_conn=4, rand_wait=5):
     def helper(args):
-        script, host = args
-        return stream_script_over_ssh(script, host, functools.partial(stream_callback, host), sudo=sudo)
+        time.sleep(random.uniform(0, rand_wait)
+        host, script = args
+        return (host, stream_script_over_ssh(host, script, functools.partial(stream_callback, host), sudo=sudo))
     p = multiprocessing.dummy.Pool(max_conn)
-    return p.map(helper, zip(scripts, hosts))
+    return dict(p.map(helper, scripts.items()))
