@@ -48,7 +48,7 @@ def run_script_over_ssh(host, script, sudo=False):
 
 def run_scripts_over_ssh_parallel(scripts, sudo=False, max_conn=4, rand_wait=5):
     def helper(args):
-        time.sleep(random.uniform(0, rand_wait)
+        time.sleep(random.uniform(0, rand_wait))
         host, script = args
         return (host, run_script_over_ssh(host, script, sudo=sudo))
     p = multiprocessing.dummy.Pool(max_conn)
@@ -64,7 +64,7 @@ def stream_script_over_ssh(host, script, stream_callback, sudo=False):
 
 def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, max_conn=4, rand_wait=5):
     def helper(args):
-        time.sleep(random.uniform(0, rand_wait)
+        time.sleep(random.uniform(0, rand_wait))
         host, script = args
         return (host, stream_script_over_ssh(host, script, functools.partial(stream_callback, host), sudo=sudo))
     p = multiprocessing.dummy.Pool(max_conn)
