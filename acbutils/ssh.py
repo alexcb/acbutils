@@ -92,5 +92,5 @@ def tabulate_results(results):
     rows = []
     for k, v in results.iteritems():
         code, output = v
-        rows.append([k, code, output])
+        rows.append([k, code, output.strip()])
     return tabulate([['Hostname', 'Exit code', 'Output']], rows)
