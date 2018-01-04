@@ -11,6 +11,22 @@ import random
 
 from .proc_utils import communicate_stream
 
+from .tabulate import tabulate
+
+
+# Example usage
+#
+# import acbutils.ssh
+# ips = ['1.2.3.4', '5.4.3.6', 'localhost']
+# scripts = {}
+# for ip in ips:
+#   scripts[ip] = acbutils.ssh.build_remote_script(textwrap.dedent('''
+#     import socket
+#     print socket.gethostname()
+#     '''))
+#
+# print acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts))
+
 def build_remote_script(script, vars={}, remotelib=None):
     buf = StringIO.StringIO()
 
@@ -71,3 +87,10 @@ def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, ssh_o
         return (host, stream_script_over_ssh(host, script, functools.partial(stream_callback, host), sudo=sudo, ssh_opts=ssh_opts))
     p = multiprocessing.dummy.Pool(max_conn)
     return dict(p.map(helper, scripts.items()))
+
+def tabulate_results(results):
+    rows = []
+    for k, v in results.iteritems():
+        code, output = v
+        rows.append([k, code, output])
+    return tabulate([['Hostname', 'Exit code', 'Output']], rows)
