@@ -8,6 +8,8 @@ import sys
 import functools
 import time
 import random
+import threading
+import curses
 
 from .proc_utils import communicate_stream
 
@@ -25,7 +27,12 @@ from .tabulate import tabulate
 #     print socket.gethostname()
 #     '''))
 #
-# print acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts))
+# ssh_opts = [
+#     '-o', 'ConnectTimeout=5',
+#     '-o', 'StrictHostKeyChecking no',
+#     ]
+# print acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True))
+
 
 def build_remote_script(script, vars={}, remotelib=None):
     buf = StringIO.StringIO()
@@ -65,13 +72,60 @@ def run_script_over_ssh(host, script, sudo=False, ssh_opts=[]):
     out = p.communicate(input=script)[0]
     return p.returncode, out.decode()
 
-def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5):
+def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False):
+
+    host_status = {x:('waiting', 0) for x in scripts}
+
+    if status:
+        screen = curses.initscr()
+        running = [True]
+        def display_status():
+            while running[0]:
+                screen.clear()
+                active = sorted([(k, v[1]) for k,v in host_status.iteritems() if v[0] == 'running'], key=lambda x: x[1])
+                num_done = len([1 for k,v in host_status.iteritems() if v[0] == 'done'])
+                num_total = len(host_status)
+                screen.addstr(1, 0, '%d / %d done' % (num_done, num_total))
+                y = 2
+                if active:
+                    screen.addstr(y, 0, 'currently running:')
+                    rows = []
+                    for h, started in active:
+                        ago = int(time.time() - started)
+                        rows.append([h, '%d second(s)' % ago])
+                    for l in tabulate([['hostname', 'session age']], rows).split('\n'):
+                        screen.addstr(y, 0, l)
+                        y += 1
+                else:
+                    screen.addstr(y, 0, 'no active sessions')
+                screen.refresh()
+                time.sleep(1)
+
     def helper(args):
-        time.sleep(random.uniform(0, rand_wait))
         host, script = args
-        return (host, run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts))
+        now = time.time()
+        host_status[host] = ('running', now)
+        time.sleep(random.uniform(0, rand_wait))
+        result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts)
+        host_status[host] = ('done', time.time() - now)
+        return (host, result)
+
+    if status:
+        stdscr = curses.initscr()
+
+        t = threading.Thread(target=display_status)
+        t.start()
+
     p = multiprocessing.dummy.Pool(max_conn)
-    return dict(p.map(helper, scripts.items()))
+    results = dict(p.map(helper, scripts.items()))
+
+    if status:
+        running[0] = False
+        t.join()
+        curses.endwin()
+
+
+    return results
 
 def stream_script_over_ssh(host, script, stream_callback, sudo=False, ssh_opts=[]):
     cmd = _get_ssh_cmd(host, sudo, ssh_opts)
@@ -90,7 +144,7 @@ def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, ssh_o
 
 def tabulate_results(results):
     rows = []
-    for k, v in results.iteritems():
+    for k, v in sorted(results.tems()):
         code, output = v
         rows.append([k, code, output.strip()])
     return tabulate([['Hostname', 'Exit code', 'Output']], rows)
