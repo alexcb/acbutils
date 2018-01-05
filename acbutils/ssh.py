@@ -66,7 +66,15 @@ def _get_ssh_cmd(host, sudo=False, ssh_opts=[]):
     cmd = ['ssh'] + ssh_opts + [host] + sudo_cmd + ['python', '-']
     return cmd
 
-def run_script_over_ssh(host, script, sudo=False, ssh_opts=[]):
+def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3):
+    i = 0
+    while 1:
+        code, output = _run_script_over_ssh(host, script, sudo, ssh_opts)
+        i += 1
+        if code == 0 or i > num_retry:
+            return code, output
+
+def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[]):
     cmd = _get_ssh_cmd(host, sudo, ssh_opts)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.communicate(input=script)[0]
@@ -142,9 +150,11 @@ def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, ssh_o
     p = multiprocessing.dummy.Pool(max_conn)
     return dict(p.map(helper, scripts.items()))
 
-def tabulate_results(results):
+def tabulate_results(results, strip_non_ascii=True):
     rows = []
     for k, v in sorted(results.items()):
         code, output = v
-        rows.append([k, code, output.strip()])
+        if strip_non_ascii:
+            output = ''.join([i if ord(i) < 128 else '?' for i in output])
+        rows.append([k, code, output.replace('\r', '').strip()])
     return tabulate([['Hostname', 'Exit code', 'Output']], rows)
