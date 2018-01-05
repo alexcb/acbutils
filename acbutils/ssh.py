@@ -144,7 +144,7 @@ def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, ssh_o
 
 def tabulate_results(results):
     rows = []
-    for k, v in sorted(results.tems()):
+    for k, v in sorted(results.items()):
         code, output = v
         rows.append([k, code, output.strip()])
     return tabulate([['Hostname', 'Exit code', 'Output']], rows)
