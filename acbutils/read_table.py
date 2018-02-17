@@ -24,7 +24,7 @@ def get_words_at_pos(s, pos):
     return [s[i:j].strip() for i, j in zip(start,end)]
 
 
-def read_table(s):
+def read_table(s, col_parsers={}):
     lines = s.split('\n')
     lines = [x for x in lines if x.strip()]
     headers = get_word_pos(lines[0])
@@ -36,6 +36,12 @@ def read_table(s):
     rows = []
     for l in lines:
         rows.append(dict(zip(colnames, get_words_at_pos(l, colpos))))
+
+    for r in rows:
+        for k in r:
+            if k in col_parsers:
+                r[k] = col_parsers[k](r[k])
+
     return rows
 
 
