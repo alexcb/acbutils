@@ -80,8 +80,6 @@ def tabulate(*args, **kwargs):
             for row in rows:
                 for i, col in enumerate(row):
                     if isinstance(col, float):
-                        print 'changing justify type'
-                        print justify, i
                         justify[i] = 'r'
     else:
         if len(justify) != expected_len:
