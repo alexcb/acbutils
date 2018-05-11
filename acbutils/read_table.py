@@ -54,4 +54,4 @@ if __name__ == '__main__':
     un
     '''
     
-    print read_table(x)
+    print(read_table(x))

@@ -1,4 +1,5 @@
 import argparse
+from __future__ import print_function
 
 class MyParser(object):
     def __init__(self, parser=None):
@@ -42,7 +43,7 @@ if __name__ == '__main__':
             parser.add_argument('--last-option', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
     
         def run(self, args):
-            print 'leaf was run'
+            print('leaf was run')
     
     class OtherLeafCommand(Command):
         def __init__(self):
@@ -53,7 +54,7 @@ if __name__ == '__main__':
             parser.add_argument('-c', '--cluster', default='a', type=str, help='cluster config', choices=('a', 'b', 'd'))
     
         def run(self, args):
-            print 'other was run, %s' % args.cluster
+            print('other was run, %s' % args.cluster)
     
     class MiddleCommand(Command):
         def __init__(self):

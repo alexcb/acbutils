@@ -1,5 +1,6 @@
 import itertools
 from random import shuffle
+from __future__ import print_function
 
 def color_vertices(edges):
     '''
@@ -45,5 +46,5 @@ def color_vertices_greedy(edges):
 if __name__ == '__main__':
     edges = [[1, 2], [2, 6], [6, 14], [14, 11], [11, 3], [3, 8], [8, 13], [13, 9], [9, 15], [15, 4], [4, 16], [16, 7], [7, 5], [5, 12], [12, 10], [10, 1]]
     for vertices in color_vertices(edges):
-        print vertices
+        print(vertices)
 
