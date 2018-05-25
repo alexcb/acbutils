@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 def calc_width(x):
     n = 0
     for l in x.split('\n'):
@@ -151,4 +153,4 @@ if __name__ == '__main__':
     footer = [
         ('one', 'two', 'three'),
         ]
-    print tabulate(headers, data, footer, style='section')
+    print(tabulate(headers, data, footer, style='section'))
