@@ -1,8 +1,7 @@
 import subprocess
 import threading
 import time
-from Queue import Queue, Empty
-from __future__ import print_function
+from queue import Queue, Empty
 
 def _readerthread(fh, piperef, q):
     if fh:
@@ -67,4 +66,4 @@ if __name__ == '__main__':
     cmd = ['ls']
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     for piperef, line in communicate_stream(p):
-        print(piperef, line)
+        print((piperef, line))

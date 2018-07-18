@@ -35,7 +35,7 @@ def read_table(s, col_parsers={}):
 
     rows = []
     for l in lines:
-        rows.append(dict(zip(colnames, get_words_at_pos(l, colpos))))
+        rows.append(dict(list(zip(colnames, get_words_at_pos(l, colpos)))))
 
     for r in rows:
         for k in r:
@@ -54,4 +54,4 @@ if __name__ == '__main__':
     un
     '''
     
-    print(read_table(x))
+    print((read_table(x)))

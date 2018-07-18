@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+import acbutils.ssh
+import sys
+import textwrap
+
+pname = sys.argv[0]
+usage = 'usage: %s <host 1> <host 2> ... <host n> -- <command>' % pname
+
+def print_help_and_exit():
+    print(usage)
+    print(textwrap.dedent('''
+    Examples:
+      %(pname)s host1 host2 host3 -- uptime
+      %(pname)s host{1,2,3} -- df -h /
+      %(pname)s host{01..16} -- hostname -f
+    ''' % {'pname': pname,}))
+    sys.exit(0)
+
+
+args = sys.argv[1:]
+try:
+    sep = args.index('--')
+except ValueError:
+    if '--help' in args or '-h' in args:
+        print_help_and_exit()
+    print(usage)
+    sys.exit(1)
+
+hosts = args[:sep]
+command = args[(sep+1):]
+
+if '--help' in hosts or '-h' in hosts:
+    print_help_and_exit()
+
+scripts = {}
+for host in hosts:
+  scripts[host] = acbutils.ssh.build_remote_script(textwrap.dedent('''
+    import sys
+    import subprocess
+
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+    status = proc.returncode
+
+    print(stdout)
+    print(stderr)
+    sys.exit(status)
+    '''),
+    vars={
+        'command': command,
+        })
+
+ssh_opts = [
+    '-o', 'ConnectTimeout=5',
+    '-o', 'StrictHostKeyChecking no',
+    ]
+print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True)))
+
+#for host, script in scripts.items():
+#    acbutils.ssh.run_script_over_ssh(host, script, sudo=False, ssh_opts=ssh_opts, num_retry=3)

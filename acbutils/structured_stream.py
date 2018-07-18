@@ -1,13 +1,12 @@
 import struct
-import cStringIO
-from __future__ import print_function
+import io
 
 class StructuredStream(object):
     def __init__(self, stream=None, endian='little'):
         if stream is None:
-            self.stream = cStringIO.StringIO()
-        elif isinstance(stream, basestring):
-            self.stream = cStringIO.StringIO(stream)
+            self.stream = io.StringIO()
+        elif isinstance(stream, str):
+            self.stream = io.StringIO(stream)
         else:
             self.stream = stream
         if endian == 'little':
@@ -141,8 +140,8 @@ class StructuredStream(object):
 
 if __name__ == '__main__':
     ss = StructuredStream('\xFE\x00\x00\x00')
-    print(repr(ss.get_uint32()))
+    print((repr(ss.get_uint32())))
 
     ss = StructuredStream()
     ss.put_uint64(12)
-    print(repr(ss.get_value()))
+    print((repr(ss.get_value())))

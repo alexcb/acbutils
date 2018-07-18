@@ -1,12 +1,10 @@
-from __future__ import print_function
-
 def grouper(n, iterable):
     '''grouper(3, "abcd") -> [['a', 'b', 'c'], ['d']]'''
     i = iter(iterable)
     running = True
     while running:
         args = []
-        for _ in xrange(n):
+        for _ in range(n):
             try:
                 args.append(next(i))
             except StopIteration:
@@ -16,7 +14,7 @@ def grouper(n, iterable):
 
 if __name__ == '__main__':
     def test_grouper():
-        for x in grouper(3, xrange(10)):
+        for x in grouper(3, list(range(10))):
             print(x)
         for x in grouper(3, "abc"):
             print(x)

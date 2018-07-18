@@ -1,6 +1,5 @@
-import os
-import re
-from setuptools import find_packages, setup
+from distutils.core import setup
+
 
 setup(
     name='acbutils',
@@ -10,5 +9,6 @@ setup(
     url='https://github.com/alexcb/acbutils',
     author='Alex Couture-Beil and contributors',
     license='BSD',
-    packages=find_packages(),
+    packages=['acbutils'],
+    scripts=['scripts/pyssh'],
 )

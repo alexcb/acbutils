@@ -1,6 +1,5 @@
 import itertools
 from random import shuffle
-from __future__ import print_function
 
 def color_vertices(edges):
     '''
@@ -12,7 +11,7 @@ def color_vertices(edges):
     TODO: find a minimal library that does something better than greedy
     '''
     smallest_coloring = None
-    for _ in xrange(10):
+    for _ in range(10):
         shuffle(edges)
         res = list(color_vertices_greedy(edges))
         if smallest_coloring is None or len(res) < smallest_coloring:

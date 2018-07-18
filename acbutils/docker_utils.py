@@ -2,7 +2,7 @@ import subprocess
 import json
 import random
 import string
-from proc_utils import communicate_stream
+from .proc_utils import communicate_stream
 
 def get_ip(network_name, container_name):
     x = subprocess.check_output('docker inspect --type container %s' % container_name, shell=True)
@@ -43,8 +43,8 @@ def interactive_wait(container_id):
 
 def run_container(network, host, image, env={}, vol={}, command='', detach=True):
 
-    env = ' '.join('--env %s=%s' % (k, v) for k, v in env.iteritems())
-    vol = ' '.join('-v %s:%s' % (k, v) for k, v in vol.iteritems())
+    env = ' '.join('--env %s=%s' % (k, v) for k, v in list(env.items()))
+    vol = ' '.join('-v %s:%s' % (k, v) for k, v in list(vol.items()))
 
     cmd = "docker run %(detach)s --name %(name)s --net %(net)s --net-alias %(host)s --hostname %(host)s %(vol)s %(env)s %(image)s %(command)s" % {
         'detach': '-d' if detach else '-ti --rm',

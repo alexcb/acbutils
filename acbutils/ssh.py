@@ -1,4 +1,3 @@
-import StringIO
 import multiprocessing.dummy
 import os
 import subprocess
@@ -10,6 +9,9 @@ import time
 import random
 import threading
 import curses
+import io
+import base64
+import traceback
 
 from .proc_utils import communicate_stream
 
@@ -35,10 +37,10 @@ from .tabulate import tabulate
 
 
 def build_remote_script(script, vars={}, remotelib=None):
-    buf = StringIO.StringIO()
+    buf = io.BytesIO()
 
     zf = zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED, False)
-    zf.writestr("__main__.py", script)
+    zf.writestr("__main__.py", script.encode('utf-8'))
 
     if remotelib:
         for root, dir, files in os.walk(remotelib):
@@ -46,7 +48,7 @@ def build_remote_script(script, vars={}, remotelib=None):
                 zf.writestr(f, open(os.path.join(root, f)).read())
     zf.close()
 
-    data = repr(buf.getvalue().encode('base64'))
+    data = repr(base64.b64encode(buf.getvalue()))
 
     return textwrap.dedent('''
         import tempfile
@@ -77,7 +79,7 @@ def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3):
 def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[]):
     cmd = _get_ssh_cmd(host, sudo, ssh_opts)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out = p.communicate(input=script)[0]
+    out = p.communicate(input=script.encode('utf-8'))[0]
     return p.returncode, out.decode()
 
 def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False):
@@ -90,8 +92,8 @@ def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, 
         def display_status():
             while running[0]:
                 screen.clear()
-                active = sorted([(k, v[1]) for k,v in host_status.iteritems() if v[0] == 'running'], key=lambda x: x[1])
-                num_done = len([1 for k,v in host_status.iteritems() if v[0] == 'done'])
+                active = sorted([(k, v[1]) for k,v in list(host_status.items()) if v[0] == 'running'], key=lambda x: x[1])
+                num_done = len([1 for k,v in list(host_status.items()) if v[0] == 'done'])
                 num_total = len(host_status)
                 screen.addstr(1, 0, '%d / %d done' % (num_done, num_total))
                 y = 2
@@ -111,11 +113,14 @@ def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, 
 
     def helper(args):
         host, script = args
-        now = time.time()
-        host_status[host] = ('running', now)
-        time.sleep(random.uniform(0, rand_wait))
-        result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts)
-        host_status[host] = ('done', time.time() - now)
+        try:
+            now = time.time()
+            host_status[host] = ('running', now)
+            time.sleep(random.uniform(0, rand_wait))
+            result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts)
+            host_status[host] = ('done', time.time() - now)
+        except Exception as e:
+            result = ("ssh exception", traceback.format_exc().replace('\n',' '))
         return (host, result)
 
     if status:
@@ -125,7 +130,7 @@ def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, 
         t.start()
 
     p = multiprocessing.dummy.Pool(max_conn)
-    results = dict(p.map(helper, scripts.items()))
+    results = dict(p.map(helper, list(scripts.items())))
 
     if status:
         running[0] = False
@@ -148,7 +153,7 @@ def stream_scripts_over_ssh_parallel(scripts, stream_callback, sudo=False, ssh_o
         host, script = args
         return (host, stream_script_over_ssh(host, script, functools.partial(stream_callback, host), sudo=sudo, ssh_opts=ssh_opts))
     p = multiprocessing.dummy.Pool(max_conn)
-    return dict(p.map(helper, scripts.items()))
+    return dict(p.map(helper, list(scripts.items())))
 
 def tabulate_results(results, strip_non_ascii=True):
     rows = []
