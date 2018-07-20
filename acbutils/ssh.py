@@ -68,21 +68,21 @@ def _get_ssh_cmd(host, sudo=False, ssh_opts=[]):
     cmd = ['ssh'] + ssh_opts + [host] + sudo_cmd + ['python', '-']
     return cmd
 
-def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3):
+def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3, timeout=None):
     i = 0
     while 1:
-        code, output = _run_script_over_ssh(host, script, sudo, ssh_opts)
+        code, output = _run_script_over_ssh(host, script, sudo, ssh_opts, timeout)
         i += 1
         if code == 0 or i > num_retry:
             return code, output
 
-def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[]):
+def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[], timeout=None):
     cmd = _get_ssh_cmd(host, sudo, ssh_opts)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out = p.communicate(input=script.encode('utf-8'))[0]
+    out = p.communicate(input=script.encode('utf-8'), timeout=timeout)[0]
     return p.returncode, out.decode()
 
-def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False):
+def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False, timeout=None):
 
     host_status = {x:('waiting', 0) for x in scripts}
 
@@ -117,7 +117,7 @@ def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, 
             now = time.time()
             host_status[host] = ('running', now)
             time.sleep(random.uniform(0, rand_wait))
-            result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts)
+            result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts, timeout=timeout)
             host_status[host] = ('done', time.time() - now)
         except Exception as e:
             result = ("ssh exception", traceback.format_exc().replace('\n',' '))
