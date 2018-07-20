@@ -52,9 +52,10 @@ for host in hosts:
 
 ssh_opts = [
     '-o', 'ConnectTimeout=5',
-    '-o', 'StrictHostKeyChecking no',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'BatchMode=yes',
     ]
-print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True)))
+print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25)))
 
 #for host, script in scripts.items():
 #    acbutils.ssh.run_script_over_ssh(host, script, sudo=False, ssh_opts=ssh_opts, num_retry=3)
