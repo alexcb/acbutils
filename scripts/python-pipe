@@ -1,0 +1,30 @@
+#!/usr/bin/python3
+import importlib
+import argparse
+import sys
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='the variable `line` is exposed to the cmd exec',
+        )
+    parser.add_argument('--source', type=str, help='optional python source to include')
+    parser.add_argument('cmd', type=str)
+    
+    args = parser.parse_args()
+
+    exposed_vars = {}
+
+    if args.source:
+        spec = importlib.util.spec_from_file_location("source_module", args.source)
+        source_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(source_module)
+        exposed_vars.update(source_module.__dict__)
+
+    for line in sys.stdin:
+        line = line.rstrip('\n')
+        exposed_vars['line'] = line
+        exec(args.cmd, globals(), exposed_vars)
+
+if __name__ == '__main__':
+    main()
+
