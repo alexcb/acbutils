@@ -53,36 +53,37 @@ def build_remote_script(script, vars={}, remotelib=None):
     return textwrap.dedent('''
         import tempfile
         import runpy
+        import base64
         
         vars = %s
         data = %s
         
         with tempfile.NamedTemporaryFile(suffix='.zip') as f:
-            f.write(data.decode('base64'))
+            f.write(base64.b64decode(data))
             f.flush()
             runpy.run_path(f.name, init_globals=vars)
     ''' % (repr(vars), data))
 
-def _get_ssh_cmd(host, sudo=False, ssh_opts=[]):
+def _get_ssh_cmd(host, sudo=False, ssh_opts=[], python='python'):
     sudo_cmd = ['sudo'] if sudo else []
-    cmd = ['ssh'] + ssh_opts + [host] + sudo_cmd + ['python', '-']
+    cmd = ['ssh'] + ssh_opts + [host] + sudo_cmd + [python, '-']
     return cmd
 
-def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3, timeout=None):
+def run_script_over_ssh(host, script, sudo=False, ssh_opts=[], num_retry=3, timeout=None, python='python'):
     i = 0
     while 1:
-        code, output = _run_script_over_ssh(host, script, sudo, ssh_opts, timeout)
+        code, output = _run_script_over_ssh(host, script, sudo, ssh_opts, timeout, python)
         i += 1
         if code == 0 or i > num_retry:
             return code, output
 
-def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[], timeout=None):
-    cmd = _get_ssh_cmd(host, sudo, ssh_opts)
+def _run_script_over_ssh(host, script, sudo=False, ssh_opts=[], timeout=None, python='python'):
+    cmd = _get_ssh_cmd(host, sudo, ssh_opts, python)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.communicate(input=script.encode('utf-8'), timeout=timeout)[0]
     return p.returncode, out.decode()
 
-def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False, timeout=None):
+def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, rand_wait=5, status=False, timeout=None, python='python'):
 
     host_status = {x:('waiting', 0) for x in scripts}
 
@@ -117,7 +118,7 @@ def run_scripts_over_ssh_parallel(scripts, sudo=False, ssh_opts=[], max_conn=4, 
             now = time.time()
             host_status[host] = ('running', now)
             time.sleep(random.uniform(0, rand_wait))
-            result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts, timeout=timeout)
+            result = run_script_over_ssh(host, script, sudo=sudo, ssh_opts=ssh_opts, timeout=timeout, python=python)
             host_status[host] = ('done', time.time() - now)
         except Exception as e:
             result = ("ssh exception", traceback.format_exc().replace('\n',' '))
