@@ -31,7 +31,7 @@ hosts = args[:sep]
 command = args[(sep+1):]
 
 sudo = False
-if '--sudo' in hosts :
+if '--sudo' in hosts:
     hosts = [x for x in hosts if x != "--sudo"]
     sudo = True
 
@@ -44,7 +44,7 @@ for host in hosts:
     import sys
     import subprocess
 
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
     status = proc.returncode
 
