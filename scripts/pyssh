@@ -13,6 +13,7 @@ def print_help_and_exit():
       %(pname)s host1 host2 host3 -- uptime
       %(pname)s host{1,2,3} -- df -h /
       %(pname)s host{01..16} -- hostname -f
+      %(pname)s host{01..16} -- 'ls -la / | grep home'
       %(pname)s --sudo host1 host2 host3 -- whoami
     ''' % {'pname': pname,}))
     sys.exit(0)
@@ -38,13 +39,17 @@ if '--sudo' in hosts:
 if '--help' in hosts or '-h' in hosts:
     print_help_and_exit()
 
+shell = True
+if len(command) > 1:
+    shell = False
+
 scripts = {}
 for host in hosts:
   scripts[host] = acbutils.ssh.build_remote_script(textwrap.dedent('''
     import sys
     import subprocess
 
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
     stdout, stderr = proc.communicate()
     status = proc.returncode
 
@@ -53,6 +58,7 @@ for host in hosts:
     sys.exit(status)
     '''),
     vars={
+        'shell': shell,
         'command': command,
         })
 
