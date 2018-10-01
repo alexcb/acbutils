@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 import acbutils.ssh
 import sys
 import textwrap
@@ -13,6 +13,7 @@ def print_help_and_exit():
       %(pname)s host1 host2 host3 -- uptime
       %(pname)s host{1,2,3} -- df -h /
       %(pname)s host{01..16} -- hostname -f
+      %(pname)s --sudo host1 host2 host3 -- whoami
     ''' % {'pname': pname,}))
     sys.exit(0)
 
@@ -28,6 +29,11 @@ except ValueError:
 
 hosts = args[:sep]
 command = args[(sep+1):]
+
+sudo = False
+if '--sudo' in hosts :
+    hosts = [x for x in hosts if x != "--sudo"]
+    sudo = True
 
 if '--help' in hosts or '-h' in hosts:
     print_help_and_exit()
@@ -56,7 +62,7 @@ ssh_opts = [
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=30', # TODO option
     ]
-print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30)))
+print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30, sudo=sudo)))
 
 #for host, script in scripts.items():
 #    acbutils.ssh.run_script_over_ssh(host, script, sudo=False, ssh_opts=ssh_opts, num_retry=3)
