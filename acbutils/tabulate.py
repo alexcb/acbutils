@@ -94,7 +94,7 @@ def tabulate(*args, **kwargs):
             if justify is None:
                 justify = ['l'] * len(row)
             for i, col in enumerate(row):
-                if isinstance(col, float):
+                if isinstance(col, float) or isinstance(col, int):
                     justify[i] = 'r'
         rows = format_rows_strings(rows)
         rows_groups.append(rows)
@@ -143,14 +143,14 @@ def tabulate(*args, **kwargs):
 
 if __name__ == '__main__':
     headers = [
-        ('a', 'b', 'c'),
+        ('a', 'b', 'c', 'd'),
         ]
     data = [
-        ('1',   2.0, '3'),
-        ('11', 22.00, '33\nthirtythree'),
-        ('11', 22.12, '33'),
+        ('1',   2.00,   1, '3'),
+        ('11', 22.00,  10, '33\nthirtythree'),
+        ('11', 22.12, 100, '33'),
         ]
     footer = [
-        ('one', 'two', 'three'),
+        ('one', 'two', 'three', 'four'),
         ]
     print(tabulate(headers, data, footer, style='section'))
