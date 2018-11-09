@@ -4,7 +4,7 @@ import sys
 import textwrap
 
 pname = sys.argv[0]
-usage = 'usage: %s <host 1> <host 2> ... <host n> -- <command>' % pname
+usage = 'usage: %s [optional flags] <host 1> <host 2> ... <host n> -- <command>' % pname
 
 def print_help_and_exit():
     print(usage)
