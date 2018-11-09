@@ -9,12 +9,16 @@ usage = 'usage: %s <host 1> <host 2> ... <host n> -- <command>' % pname
 def print_help_and_exit():
     print(usage)
     print(textwrap.dedent('''
+    Flags:
+      --help         shows this message
+      --blind-trust  disables ssh key checking
+
     Examples:
       %(pname)s host1 host2 host3 -- uptime
       %(pname)s host{1,2,3} -- df -h /
       %(pname)s host{01..16} -- hostname -f
       %(pname)s host{01..16} -- 'ls -la / | grep home'
-      %(pname)s --sudo host1 host2 host3 -- whoami
+      %(pname)s --blind-trust host1 host2 host3 -- sudo whoami
     ''' % {'pname': pname,}))
     sys.exit(0)
 
@@ -31,13 +35,32 @@ except ValueError:
 hosts = args[:sep]
 command = args[(sep+1):]
 
-sudo = False
-if '--sudo' in hosts:
-    hosts = [x for x in hosts if x != "--sudo"]
-    sudo = True
+flags = {
+    'help': ('--help', '-h'),
+    'blind-trust': ('--blind-trust',),
+    }
+set_flags = {x:0 for x in flags.keys()}
+def check_flag(s):
+    for k, v in flags.items():
+        for x in v:
+            if x == s:
+                set_flags[k] += 1
 
-if '--help' in hosts or '-h' in hosts:
+
+for i, s in enumerate(hosts):
+    if s.startswith('-'):
+        try:
+            check_flag(s)
+        except ValueError:
+            sys.exit(f'invalid option {s}')
+    else:
+        hosts = hosts[i:]
+        break
+
+if set_flags['help']:
     print_help_and_exit()
+
+blind_trust = bool(set_flags['blind-trust'])
 
 shell = True
 if len(command) > 1:
@@ -63,12 +86,14 @@ for host in hosts:
         })
 
 ssh_opts = [
-    '-o', 'ConnectTimeout=5', # TODO option
-    '-o', 'StrictHostKeyChecking=no',
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=30', # TODO option
     ]
-print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30, sudo=sudo)))
+
+if blind_trust:
+    ssh_opts.extend(['-o', 'UserKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=no', '-o', 'LogLevel=error'])
+
+print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30)))
 
 #for host, script in scripts.items():
 #    acbutils.ssh.run_script_over_ssh(host, script, sudo=False, ssh_opts=ssh_opts, num_retry=3)
