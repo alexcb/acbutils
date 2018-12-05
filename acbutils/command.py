@@ -18,13 +18,18 @@ class MyParser(object):
     def parse_args(self, *args, **kwargs):
         return self._parser.parse_args(*args, **kwargs)
 
+    def print_help(self, *args, **kwargs):
+        return self._parser.print_help(*args, **kwargs)
+
 
 class Command(object):
     def run(self):
         parser = MyParser()
         self.add_arguments(parser)
         args = parser.parse_args()
-        return args.func(args)
+        if hasattr(args, 'func'):
+            return args.func(args)
+        parser.print_help()
 
     def name(self):
         return self.__class__.__name__
