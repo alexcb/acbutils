@@ -7,6 +7,8 @@ class StructuredStream(object):
             self.stream = io.StringIO()
         elif isinstance(stream, str):
             self.stream = io.StringIO(stream)
+        elif isinstance(stream, bytes):
+            self.stream = io.BytesIO(stream)
         else:
             self.stream = stream
         if endian == 'little':
