@@ -38,6 +38,7 @@ command = args[(sep+1):]
 flags = {
     'help': ('--help', '-h'),
     'blind-trust': ('--blind-trust',),
+    'group-output': ('-g',),
     }
 set_flags = {x:0 for x in flags.keys()}
 def check_flag(s):
@@ -61,6 +62,7 @@ if set_flags['help']:
     print_help_and_exit()
 
 blind_trust = bool(set_flags['blind-trust'])
+group_output = bool(set_flags['group-output'])
 
 shell = True
 if len(command) > 1:
@@ -93,7 +95,19 @@ ssh_opts = [
 if blind_trust:
     ssh_opts.extend(['-o', 'UserKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=no', '-o', 'LogLevel=error'])
 
-print(acbutils.ssh.tabulate_results(acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30)))
+results = acbutils.ssh.run_scripts_over_ssh_parallel(scripts, ssh_opts=ssh_opts, status=True, max_conn=25, timeout=30)
+
+if group_output:
+    for i, (host, (exit_code, output)) in enumerate(results.items()):
+        if i > 0:
+            print('')
+        print('-'*len(host))
+        print(host)
+        print('-'*len(host))
+        print(output)
+        print(f'exit code: {exit_code}')
+else:
+    print(acbutils.ssh.tabulate_results(results))
 
 #for host, script in scripts.items():
 #    acbutils.ssh.run_script_over_ssh(host, script, sudo=False, ssh_opts=ssh_opts, num_retry=3)
