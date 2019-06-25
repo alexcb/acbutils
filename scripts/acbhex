@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='cat a range of a file; perhaps one day it will dump it as hex, but for now just pipe into xxd',
         )
-    parser.add_argument('--range', type=str, help='start:stop')
+    parser.add_argument('--range', type=str, help='range of bytes to display, can be: "<offset>" to indicate a single byte; "<start>:<stop>" or "<start>:+<count>" to indicate a range, or ":<end>" or "<start>:" to indicate tail or head limits')
     parser.add_argument('path', type=str)
     
     args = parser.parse_args()
@@ -26,8 +26,10 @@ def main():
             else:
                 start = int(start)
             if stop != '':
-                stop = int(stop)
-                limit = stop - start
+                if stop[0] == '+':
+                    limit = int(stop[1:])
+                else:
+                    limit = int(stop) - start
 
     chunk_size = 102400
     with open(args.path, 'rb') as fp:
