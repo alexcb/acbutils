@@ -15,7 +15,6 @@ def main():
     start = 0
     limit = None
     if args.range:
-        print(args.range)
         if ':' not in args.range:
             start = int(args.range)
             limit = 1
