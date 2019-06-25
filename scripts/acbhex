@@ -1,0 +1,46 @@
+#!/usr/bin/python3
+import importlib
+import argparse
+import sys
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='cat a range of a file; perhaps one day it will dump it as hex, but for now just pipe into xxd',
+        )
+    parser.add_argument('--range', type=str, help='start:stop')
+    parser.add_argument('path', type=str)
+    
+    args = parser.parse_args()
+
+    start = 0
+    limit = None
+    if args.range:
+        print(args.range)
+        if ':' not in args.range:
+            start = int(args.range)
+            limit = 1
+        else:
+            start, stop = args.range.split(':')
+            if start == '':
+                start = 0
+            else:
+                start = int(start)
+            if stop != '':
+                stop = int(stop)
+                limit = stop - start
+
+    chunk_size = 102400
+    with open(args.path, 'rb') as fp:
+        fp.seek(start)
+        if limit is not None and limit < chunk_size:
+            chunk_size = limit
+        b = fp.read(chunk_size)
+        sys.stdout.buffer.write(b)
+        if limit is not None:
+            limit -= chunk_size
+            if limit <= 0:
+                return
+
+if __name__ == '__main__':
+    main()
+
