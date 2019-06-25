@@ -10,5 +10,8 @@ setup(
     author='Alex Couture-Beil and contributors',
     license='BSD',
     packages=['acbutils'],
-    scripts=['scripts/pyssh'],
+    scripts=[
+        'scripts/pyssh',
+        'scripts/acbhex',
+        ],
 )
