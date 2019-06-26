@@ -12,6 +12,6 @@ setup(
     packages=['acbutils'],
     scripts=[
         'scripts/pyssh',
-        'scripts/acbhex',
+        'scripts/acbcat',
         ],
 )
