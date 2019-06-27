@@ -13,5 +13,6 @@ setup(
     scripts=[
         'scripts/pyssh',
         'scripts/acbcat',
+        'scripts/utc',
         ],
 )

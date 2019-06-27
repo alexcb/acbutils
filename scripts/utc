@@ -1,0 +1,63 @@
+#!/usr/bin/python3
+import importlib
+import argparse
+import sys
+import datetime
+import dateutil.tz
+
+def format_time(t):
+    fmt = "%Y-%m-%d %H:%M:%S"
+    if t.tzinfo:
+        return t.strftime(fmt + " %Z")
+    return t.strftime(fmt + " UTC")
+
+def conv(now, from_tz, to_tz):
+    now_from = now.replace(tzinfo=from_tz)
+    now_to = now_from.astimezone(to_tz)
+    print(f'{format_time(now_from)} is {format_time(now_to)}')
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='converts utc to localtime and back',
+        )
+    parser.add_argument('--from', type=str, help='from timezone')
+    parser.add_argument('--to', type=str, help='to timezone')
+    parser.add_argument('time', type=str, help='time to convert')
+    
+    args = parser.parse_args()
+    x = args.time.split(':')
+
+    try:
+        if len(x) == 1:
+            hour = int(x[0])
+            minute = 0
+            second = 0
+        elif len(x) == 2:
+            hour = int(x[0])
+            minute = int(x[1])
+            second = 0
+        elif len(x) == 3:
+            hour = int(x[0])
+            minute = int(x[1])
+            second = int(x[2])
+        else:
+            raise ValueError(args.time)
+    except:
+        print(f'unable to parse time "{args.time}"')
+        sys.exit(1)
+
+    try:
+        now = datetime.datetime.combine(
+                datetime.date.today(),
+                datetime.time(hour, minute, second),
+                )
+    except Exception as e:
+        print(f'unable to parse time "{args.time}": {e}')
+        sys.exit(1)
+
+    conv(now, dateutil.tz.tzutc(), dateutil.tz.tzlocal())
+    conv(now, dateutil.tz.tzlocal(), dateutil.tz.tzutc())
+
+if __name__ == '__main__':
+    main()
+
