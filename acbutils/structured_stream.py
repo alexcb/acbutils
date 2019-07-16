@@ -39,7 +39,10 @@ class StructuredStream(object):
         self._write(self.endian + 'b', x)
 
     def get_uint8(self):
-        return ord(self.stream.read(1))
+        s = self.stream.read(1)
+        if len(s) == 0:
+            raise EOFError
+        return ord(s)
 
     def put_uint8(self, x):
         self._write(self.endian + 'B', x)
