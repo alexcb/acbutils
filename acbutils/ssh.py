@@ -162,5 +162,5 @@ def tabulate_results(results, strip_non_ascii=True):
         code, output = v
         if strip_non_ascii:
             output = ''.join([i if ord(i) < 128 else '?' for i in output])
-        rows.append([k, code, output.replace('\r', '').strip()])
+        rows.append([k, str(code), output.replace('\r', '').strip()])
     return tabulate([['Hostname', 'Exit code', 'Output']], rows)
