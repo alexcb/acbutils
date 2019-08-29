@@ -12,8 +12,8 @@ def print_help_and_exit():
     print(textwrap.dedent('''
     Flags:
       -h, --help         shows this message
-      --blind-trust  disables ssh key checking
-      -g, --group  disables ssh key checking
+      --blind-trust      disables ssh key checking
+      -g, --group        disables ssh key checking
       -t, --timeout <n>  ssh timeout in seconds
 
     Examples:
