@@ -11,9 +11,10 @@ def print_help_and_exit():
     print(usage)
     print(textwrap.dedent('''
     Flags:
-      --help         shows this message
+      -h, --help         shows this message
       --blind-trust  disables ssh key checking
-      --timeout <n>  ssh timeout in seconds
+      -g, --group  disables ssh key checking
+      -t, --timeout <n>  ssh timeout in seconds
 
     Examples:
       %(pname)s host1 host2 host3 -- uptime
