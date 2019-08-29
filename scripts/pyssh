@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import acbutils.ssh
+from acbutils.nargparse import ArgumentParser
 import sys
 import textwrap
 
@@ -12,6 +13,7 @@ def print_help_and_exit():
     Flags:
       --help         shows this message
       --blind-trust  disables ssh key checking
+      --timeout <n>  ssh timeout in seconds
 
     Examples:
       %(pname)s host1 host2 host3 -- uptime
@@ -22,47 +24,19 @@ def print_help_and_exit():
     ''' % {'pname': pname,}))
     sys.exit(0)
 
+arg_parser = ArgumentParser()
+arg_parser.add_argument('-h', '--help', action='store_true')
+arg_parser.add_argument('-g', '--group-output', action='store_true')
+arg_parser.add_argument('--blind-trust', action='store_true')
+arg_parser.add_argument('-t', '--timeout', default=30, type=int)
 
-args = sys.argv[1:]
-try:
-    sep = args.index('--')
-except ValueError:
-    if '--help' in args or '-h' in args:
-        print_help_and_exit()
-    print(usage)
-    sys.exit(1)
-
-hosts = args[:sep]
-command = args[(sep+1):]
-
-flags = {
-    'help': ('--help', '-h'),
-    'blind-trust': ('--blind-trust',),
-    'group-output': ('-g',),
-    }
-set_flags = {x:0 for x in flags.keys()}
-def check_flag(s):
-    for k, v in flags.items():
-        for x in v:
-            if x == s:
-                set_flags[k] += 1
-
-
-for i, s in enumerate(hosts):
-    if s.startswith('-'):
-        try:
-            check_flag(s)
-        except ValueError:
-            sys.exit(f'invalid option {s}')
-    else:
-        hosts = hosts[i:]
-        break
-
-if set_flags['help']:
+args, hosts, command = arg_parser.parse_args()
+if args['help']:
     print_help_and_exit()
 
-blind_trust = bool(set_flags['blind-trust'])
-group_output = bool(set_flags['group-output'])
+blind_trust = args['blind-trust']
+group_output = args['group-output']
+timeout = args['timeout']
 
 shell = True
 if len(command) > 1:
@@ -95,7 +69,7 @@ for host in hosts:
 
 ssh_opts = [
     '-o', 'BatchMode=yes',
-    '-o', 'ConnectTimeout=30', # TODO option
+    '-o', f'ConnectTimeout={timeout}',
     ]
 
 if blind_trust:
