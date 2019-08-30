@@ -35,6 +35,14 @@ args, hosts, command = arg_parser.parse_args()
 if args['help']:
     print_help_and_exit()
 
+if not hosts:
+    print('Error: no hosts given.\nTry --help for usage.')
+    sys.exit(1)
+
+if not command:
+    print('Error: no command given.\nTry --help for usage.')
+    sys.exit(1)
+
 blind_trust = args['blind-trust']
 group_output = args['group-output']
 timeout = args['timeout']
