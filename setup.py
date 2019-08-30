@@ -11,7 +11,7 @@ setup(
     license='BSD',
     packages=['acbutils'],
     scripts=[
-        'scripts/pyssh',
+        'scripts/acbssh',
         'scripts/acbcat',
         'scripts/utc',
         ],
