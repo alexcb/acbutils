@@ -8,23 +8,35 @@ def main():
         description='the variable `line` is exposed to the cmd exec',
         )
     parser.add_argument('--source', type=str, help='optional python source to include')
+    parser.add_argument('--start', type=str, help='execute this before starting')
+    parser.add_argument('--end', type=str, help='execute this after')
     parser.add_argument('cmd', type=str)
     
     args = parser.parse_args()
 
-    exposed_vars = {}
+    myvars = {}
 
     if args.source:
-        spec = importlib.util.spec_from_file_location("source_module", args.source)
-        source_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(source_module)
-        exposed_vars.update(source_module.__dict__)
+        spec = importlib.util.spec_from_file_location("mymodule", args.source)
+        mymodule = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mymodule)
+        myvars.update(mymodule.__dict__)
+
+    if args.start:
+        exec(args.start, globals(), myvars)
 
     for line in sys.stdin:
         line = line.rstrip('\n')
-        exposed_vars['line'] = line
-        exec(args.cmd, globals(), exposed_vars)
+        myvars['line'] = line
+        myvars['l'] = line
+        exec(args.cmd, globals(), myvars)
+
+    if args.end:
+        exec(args.end, globals(), myvars)
+    else:
+        for k,v in myvars.items():
+            if k not in ('line', 'l'):
+                print(f'{k}: {v}')
 
 if __name__ == '__main__':
     main()
-
