@@ -1,0 +1,35 @@
+#!/usr/bin/python3
+import importlib
+import argparse
+import sys
+import os
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='create a static gallery with images',
+        )
+    parser.add_argument('--path', type=str, help='location of images', default='.')
+    parser.add_argument('--recursive', help='recursively search for images', action='store_true' )
+    args = parser.parse_args()
+
+    html = ['<html><body>']
+
+    first = True
+    for root, dirs, files in os.walk(args.path):
+        if not args.recursive:
+            dirs = dirs[:0]
+        for f in files:
+            if not first:
+                html.append('<br/>')
+            else:
+                first = False
+            #html.append(f'<img src="{path}" alt="{f}"><br/>{f}<br/>')
+            path = f
+            html.append('<img src="' + path + '" alt="' + f + '"><br/>' + f + '<br/>')
+
+    html.append('</body></html>')
+    print(''.join(html))
+
+if __name__ == '__main__':
+    main()
+
