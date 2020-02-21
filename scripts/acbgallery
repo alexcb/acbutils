@@ -4,11 +4,22 @@ import argparse
 import sys
 import os
 
+def limit_extensions(files, extensions):
+    for f in files:
+        if not extensions:
+            yield f
+            continue
+        _, ext = os.path.splitext(f)
+        ext = ext.lower()
+        if ext in extensions:
+            yield f
+
 def main():
     parser = argparse.ArgumentParser(
         description='create a static gallery with images',
         )
     parser.add_argument('--path', type=str, help='location of images', default='.')
+    parser.add_argument('--extensions', type=str, help='location of images', nargs='*', default=['.jpg', '.png'])
     parser.add_argument('--recursive', help='recursively search for images', action='store_true' )
     args = parser.parse_args()
 
@@ -18,7 +29,7 @@ def main():
     for root, dirs, files in os.walk(args.path):
         if not args.recursive:
             dirs = dirs[:0]
-        for f in files:
+        for f in sorted(limit_extensions(files, args.extensions)):
             if not first:
                 html.append('<br/>')
             else:
