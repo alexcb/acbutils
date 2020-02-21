@@ -13,6 +13,7 @@ setup(
     scripts=[
         'scripts/acbssh',
         'scripts/acbcat',
+        'scripts/acbgallery',
         'scripts/utc',
         ],
 )
