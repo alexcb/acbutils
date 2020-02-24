@@ -11,6 +11,7 @@ setup(
     license='BSD',
     packages=['acbutils'],
     scripts=[
+        'scripts/python-pipe',
         'scripts/acbssh',
         'scripts/acbcat',
         'scripts/acbgallery',
