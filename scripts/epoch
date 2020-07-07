@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+import argparse
+import time
+
+def guess_time(s, suffix=''):
+    s = int(s)
+    localtime = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(s))
+    utc = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(s))
+    print('%s%s:' % (s, suffix))
+    print('  %s' % localtime)
+    print('  %s' % utc)
+    
+
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('str', nargs='*')
+
+args = parser.parse_args()
+
+guess_time(str(int(time.time())), ' (now)')
+for s in args.str:
+    guess_time(s)

@@ -17,5 +17,6 @@ setup(
         'scripts/acbgallery',
         'scripts/githublink',
         'scripts/utc',
+        'scripts/epoch',
         ],
 )
