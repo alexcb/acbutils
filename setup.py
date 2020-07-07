@@ -15,6 +15,7 @@ setup(
         'scripts/acbssh',
         'scripts/acbcat',
         'scripts/acbgallery',
+        'scripts/githublink',
         'scripts/utc',
         ],
 )

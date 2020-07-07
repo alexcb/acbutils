@@ -1,0 +1,47 @@
+#!/usr/bin/python3
+import subprocess
+import sys
+import time
+import os
+
+
+def die(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+    sys.exit(1)
+
+path = os.path.realpath(sys.argv[1])
+try:
+    line = sys.argv[2]
+except:
+    line = ''
+
+
+current_branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode('utf8').strip()
+origin = subprocess.check_output(['git', 'config', '--get', 'remote.origin.url']).decode('utf8').strip()
+gitpath = subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode('utf8').strip() + '/'
+
+if not path.startswith(gitpath):
+    die('path not in git repo')
+path = path[len(gitpath):]
+
+
+if origin.startswith('http'):
+    if origin.endswith('.git'):
+        origin = origin[:-4]
+    url = '%s/blob/%s/%s#L%s' % (origin, current_branch, path, line)
+elif origin.startswith('ssh://git@'):
+    origin = origin[10:]
+    if origin.endswith('.git'):
+        origin = origin[:-4]
+    url = 'http://%s/blob/%s/%s#L%s' % (origin, current_branch, path, line)
+elif origin.startswith('git'):
+    org_repo = origin.split(':')[1][:-4]
+    githubhost = origin.split('@')[1].split(':')[0]
+    url='https://%s/%s/blob/%s/%s' % (githubhost, org_repo, current_branch, path)
+    if line:
+        url += '#L' + line
+else:
+    die('unsupported origin: %s' % origin)
+
+subprocess.check_call(['/usr/bin/xdg-open', url])
+
