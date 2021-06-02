@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+import datetime
+import pytz
+import sys
+import os
+import subprocess
+import tempfile
+
+repo = sys.argv[1]
+branch_or_sha1 = sys.argv[2]
+
+
+repo_host, repo_path = repo.split('/', 1)
+
+repo_url = f'git@{repo_host}:{repo_path}.git'
+
+dirpath = tempfile.mkdtemp()
+
+os.chdir(dirpath)
+subprocess.check_output(["git", "init"])
+subprocess.check_output(["git", "remote", 'add', repo, repo_url ])
+subprocess.check_output(["git", "fetch", repo ])
+
+subprocess.check_output(["git", "checkout", branch_or_sha1 ])
+
+sha1 = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode('ascii').strip()
+
+commit_date = subprocess.check_output(["git", "show", "-s", "--format=%ci", sha1]).decode('ascii').strip()
+
+version = "v0.0.0"
+date_time_obj = datetime.datetime.strptime(commit_date, '%Y-%m-%d %H:%M:%S %z')
+date_time_obj = date_time_obj.astimezone(pytz.timezone('utc'))
+timestamp = date_time_obj.strftime('%Y%m%d%H%M%S')
+
+print(f'{repo}@{version}-{timestamp}-{sha1[:12]}')
