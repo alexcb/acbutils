@@ -18,5 +18,6 @@ setup(
         'scripts/githublink',
         'scripts/utc',
         'scripts/epoch',
+        'scripts/git-timestamp-sha',
         ],
 )
