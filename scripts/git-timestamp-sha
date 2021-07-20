@@ -6,6 +6,10 @@ import os
 import subprocess
 import tempfile
 
+if len(sys.argv) < 3:
+    print(f'usage: git-timestamp-sha github.com/user/repo branch-or-sha')
+    sys.exit(1)
+
 repo = sys.argv[1]
 branch_or_sha1 = sys.argv[2]
 
