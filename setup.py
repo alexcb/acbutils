@@ -1,6 +1,5 @@
 from distutils.core import setup
 
-
 setup(
     name='acbutils',
     version='0.0.1',
@@ -11,13 +10,14 @@ setup(
     license='BSD',
     packages=['acbutils'],
     scripts=[
-        'scripts/python-pipe',
-        'scripts/acbssh',
         'scripts/acbcat',
         'scripts/acbgallery',
-        'scripts/githublink',
-        'scripts/utc',
+        'scripts/acbssh',
         'scripts/epoch',
         'scripts/git-timestamp-sha',
+        'scripts/githublink',
+        'scripts/python-pipe',
+        'scripts/todo',
+        'scripts/utc',
         ],
 )

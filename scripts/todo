@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+
+import os
+import pathlib
+from datetime import date
+
+def main():
+    today = date.today()
+    home = os.environ['HOME']
+    dirpath = f'{home}/notes/todo/{today.year}/{today.month}'
+    pathlib.Path(dirpath).mkdir(parents=True, exist_ok=True)
+
+    os.chdir(dirpath)
+    base = f'{today.year}-{today.month}-{today.day}.txt'
+    pathlib.Path(base).touch()
+    os.execv("/usr/bin/gvim", ["gvim", base])
+
+if __name__ == '__main__':
+    main()
