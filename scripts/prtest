@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+
+# Setup:
+#   Place this in your ~/.bash_rc
+#
+#  prtest() {
+#      cd $(~/bin/prtest "$@")
+#  }
+#
+# This will cause your terminal to change to the directory once it has been checked out.
+# Note: even though this is called "prtest", it doesn't have anything to do with PRs...
+
+
+import subprocess
+import argparse
+import sys
+import os
+import pathlib
+
+def parse_repo(repo):
+    prefix = 'git@github.com:'
+    assert repo.startswith(prefix)
+    repo = repo[len(prefix):]
+    user, repo = repo.split('/')
+    suffix = '.git'
+    assert repo.endswith(suffix)
+    repo = repo[:-len(suffix)]
+    return user, repo
+
+def get_default_branch(path):
+    return subprocess.check_output("git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'", shell=True, cwd=path).decode('utf8').strip()
+
+import pathlib
+pathlib.Path("/tmp/path/to/desired/directory").mkdir(parents=True, exist_ok=True)
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='pr test')
+    parser.add_argument('repo', help='git repo to clone')
+    parser.add_argument('sha', nargs='?', help='branch or sha to checkout')
+    args = parser.parse_args()
+
+    homedir = os.environ.get('HOME')
+    assert homedir
+
+    user, repo = parse_repo(args.repo)
+    path = os.path.join(homedir, 'testing', user)
+    pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+
+    repopath = os.path.join(path, repo)
+
+    if pathlib.Path(repopath).exists():
+        if args.sha:
+            subprocess.check_call(['git', 'fetch', '--all'], shell=False, env=None, cwd=repopath, stdout=sys.stderr.buffer)
+            subprocess.check_call(['git', 'checkout', args.sha], shell=False, env=None, cwd=repopath, stdout=sys.stderr.buffer)
+            subprocess.check_call(['git', 'pull'], shell=False, env=None, cwd=repopath, stdout=sys.stderr.buffer)
+        else:
+            default_branch = get_default_branch(repopath)
+            subprocess.check_call(['git', 'checkout', default_branch], shell=False, env=None, cwd=repopath, stdout=sys.stderr.buffer)
+            subprocess.check_call(['git', 'pull'], shell=False, env=None, cwd=repopath, stdout=sys.stderr.buffer)
+    else:
+        subprocess.check_call(['git', 'clone', args.repo], shell=False, env=None, cwd=path, stdout=sys.stderr.buffer)
+
+    print(repopath)
