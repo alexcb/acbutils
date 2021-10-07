@@ -16,6 +16,7 @@ setup(
         'scripts/epoch',
         'scripts/git-timestamp-sha',
         'scripts/githublink',
+        'scripts/prtest',
         'scripts/python-pipe',
         'scripts/todo',
         'scripts/utc',
