@@ -5,7 +5,7 @@ misc python utilities
 
 or from local copy:
 
-    sudo pip3 install .
+    sudo pip3 install --ignore-installed .
 
 
 
