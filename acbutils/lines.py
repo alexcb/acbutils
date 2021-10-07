@@ -1,3 +1,6 @@
+class MultipleLineEndingsError(ValueError):
+    pass
+
 def index_or_none(s, sub):
     try:
         return s.index(sub)
@@ -36,7 +39,6 @@ def lines(s):
         yield s, ''
         break
 
-
 def _test_lines():
      assert list(lines('')) == []
 
@@ -63,5 +65,34 @@ def _test_lines():
 
      assert list(lines('one\rtwo\n\rthree')) == [ ('one', '\r'), ('two', '\n'), ('', '\r'), ('three', '') ]
 
+def ending(s):
+    if not s:
+        return ''
+    l = list(lines(s))
+    if len(l) != 1:
+        raise MultipleLineEndingsError
+    return l[0][1]
+
+def _test_ending():
+    assert ending('') == ''
+    assert ending('\n') == '\n'
+    assert ending('\r') == '\r'
+    assert ending('\r\n') == '\r\n'
+
+    assert ending('hello\n') == '\n'
+    assert ending('hello\r') == '\r'
+    assert ending('hello\r\n') == '\r\n'
+
+    good = False
+    try:
+        ending('\rbad\n')
+    except MultipleLineEndingsError:
+        good = True
+    assert good
+
+
+
+
 if __name__ == '__main__':
     _test_lines()
+    _test_ending()
