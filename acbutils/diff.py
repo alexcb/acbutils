@@ -1,4 +1,4 @@
-from lines import lines
+from .lines import lines
 
 def diffparse(s):
     return diffparse_(lines(s))
