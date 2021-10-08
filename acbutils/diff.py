@@ -1,12 +1,12 @@
 from .lines import lines
 
 def diffparse(s):
-    return diffparse_(lines(s))
+    return diffparse_(enumerate(lines(s)))
 
-def diffparse_(lines_itr, expect_end=None):
+def diffparse_(lines_itr, expect_end=None, line_start=0):
     sections = []
     section = []
-    for line, line_ending in lines_itr:
+    for line_num, (line, line_ending) in lines_itr:
         splits = line.split()
         if splits:
             prefix = splits[0]
@@ -41,7 +41,7 @@ def diffparse_(lines_itr, expect_end=None):
                         'text': section,
                         })
                 return sections
-        section.append(line + line_ending)
+        section.append((line_num+1, line + line_ending))
     if section:
         sections.append({
             'type': 'text',
@@ -68,22 +68,24 @@ def _test_diffparse():
         {
             'type': 'text',
             'text': [
-                'start\n',
-                'line\n',
+                (1, 'start\n'),
+                (2, 'line\n'),
                 ],
             },
         {
             'type': 'diff',
             'a': [
                 {'type': 'text',
-                    'text': ['alpha\n'],
+                    'text': [
+                        (4, 'alpha\n'),
+                        ],
                 }
                 ],
             'b': [
                 {'type': 'text',
                     'text': [
-                        'bravo\n',
-                        'charlie\n',
+                        (6, 'bravo\n'),
+                        (7, 'charlie\n'),
                         ],
                 }
                 ],
@@ -91,8 +93,8 @@ def _test_diffparse():
         {
             'type': 'text',
             'text': [
-                'finish\n',
-                'line\n',
+                (9, 'finish\n'),
+                (10,'line\n'),
                 ],
             },
         ]
@@ -133,7 +135,7 @@ def _test_diffparse_nested():
     want = [
         {
             'type': 'text',
-            'text': ['hello\n'],
+            'text': [(1, 'hello\n')],
             },
         {
             'type': 'diff',
@@ -141,17 +143,17 @@ def _test_diffparse_nested():
                 {'type': 'diff',
                     'a': [
                         {'type': 'text',
-                            'text': ['   Copyright [yyyy] [name of copyright owner]\n'],
+                            'text': [(4, '   Copyright [yyyy] [name of copyright owner]\n')],
                             }],
                     'b': [
                         {'type': 'text',
-                            'text': ['   Copyright {yyyy} {name of copyright owner}\n'],
+                            'text': [(6, '   Copyright {yyyy} {name of copyright owner}\n')],
                             }],
                     }
                 ],
             'b': [
                 {'type': 'text',
-                    'text': ['   Copyright [yyyy] [name of copyright owner]\n'],
+                    'text': [(9, '   Copyright [yyyy] [name of copyright owner]\n')],
                 }
                 ],
             },
