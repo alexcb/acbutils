@@ -20,5 +20,6 @@ setup(
         'scripts/python-pipe',
         'scripts/todo',
         'scripts/utc',
+        'scripts/merge-helper',
         ],
 )

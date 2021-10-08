@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+import subprocess
+import argparse
+import datetime
+import sys
+import os
+import hashlib
+
+from acbutils.diff import diffparse
+
+def get_merge_head():
+    with open('.git/MERGE_HEAD', 'rb') as fp:
+        merge_head = fp.read().decode('utf8').strip()
+    if len(merge_head) == 40:
+        return merge_head
+    return None
+
+def get_head():
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], shell=False, env=None).decode('utf8').strip()
+
+def get_merge_base(a, b):
+    return subprocess.check_output(['git', 'merge-base', a, b], shell=False, env=None).decode('utf8').strip()
+
+def blame(path):
+    out = subprocess.check_output(f'git blame --porcelain {path}', shell=True).decode('utf8')
+    sha = None
+    existing_sha = False
+    lines = []
+    shas = {}
+    for line in out.splitlines():
+        if sha is None:
+            splits = line.split()
+            if len(splits) == 4:
+                splits = splits[:3]
+            # orig_n is the line number where the line came from in sha
+            sha, orig_n, final_n = splits
+            assert int(final_n) == (len(lines)+1)
+            existing_sha = bool(sha in shas)
+            if not existing_sha:
+                sha_details = {}
+            continue
+        if not existing_sha:
+            k, v = line.split(maxsplit=1)
+            sha_details[k] = v
+            if k == 'filename':
+                existing_sha = True
+                shas[sha] = sha_details
+            continue
+        assert line.startswith('\t')
+        line = line[1:]
+        lines.append({
+            'commit': sha,
+            'commit_details': shas[sha],
+            'line_in_commit': orig_n,
+            'line_current': final_n,
+            'line': line,
+            })
+        sha = None
+    return lines
+
+def is_commit(sha):
+    return sha and sha != '0000000000000000000000000000000000000000'
+
+def trim_str(s, n=20):
+    if len(s) <= n or n <= 3:
+        return s
+    return s[:-3] + '...'
+
+
+SECTION_NONE = object()
+SECTION_LOCAL = object()
+SECTION_REMOTE = object()
+
+changes_prefix = '!! changes from'
+
+def get_shas_and_text(sections, lines):
+    out = []
+    shas = {}
+    for section in sections:
+        if section['type'] == 'text':
+            for line_num, line in section['text']:
+                out.append(line)
+                commit = lines[line_num]['commit']
+                shas[commit] = 1
+        elif section['type'] == 'diff':
+            shas2, out2 = get_shas_and_text(section['a'], lines)
+            shas.update(shas2)
+            out.extend(out)
+            shas2, out2 = get_shas_and_text(section['b'], lines)
+            shas.update(shas2)
+            out.extend(out)
+        else:
+            assert 0
+    return shas, ''.join(out)
+
+
+def format_blame(lines, local_url_prefix='', remote_url_prefix=''):
+    commit_lookup = {}
+    for l in lines:
+        commit = l['commit']
+        if is_commit(commit):
+            commit_lookup[commit] = l['commit_details']
+
+    out = []
+    def add_commits(section_type, commits):
+        nonlocal out
+        details = []
+        for commit in commits:
+            if is_commit(commit):
+                commit_details = commit_lookup[commit]
+                author = commit_details['author']
+                author_date = datetime.datetime.utcfromtimestamp(int(commit_details['author-time'])).isoformat()
+                author_summary = trim_str(commit_details['summary'], n=60)
+                url = None
+                if section_type == SECTION_LOCAL:
+                    url = local_url_prefix + commit + ' '
+                elif section_type == SECTION_REMOTE:
+                    url = remote_url_prefix + commit
+                else:
+                    assert 0
+
+                details.append({
+                    'url': url,
+                    'author': author,
+                    'author_date': author_date,
+                    'author_summary': author_summary,
+                    })
+
+        first_commit_details = True
+        for detail in sorted(details, key=lambda x: x['author_date'], reverse=True):
+           if not first_commit_details:
+               out.append('!!\n')
+           out.append(f'{changes_prefix} {url}\n!!  by {author} at {author_date}\n!!  {author_summary}\n')
+           first_commit_details = False
+
+
+    s = '\n'.join(x['line'] for x in lines)
+    sections = diffparse(s)
+    for section in sections:
+        if section['type'] == 'text':
+            out.append(''.join(x[1] for x in section['text']))
+        elif section['type'] == 'diff':
+            commits, out2 = get_shas_and_text(section['a'], lines)
+            out.append('<<<<<<\n')
+            add_commits(SECTION_LOCAL, commits)
+            out.extend(out2)
+            commits, out2 = get_shas_and_text(section['b'], lines)
+            out.append('======\n')
+            add_commits(SECTION_REMOTE, commits)
+            out.extend(out2)
+            out.append('>>>>>>\n')
+        else:
+            assert 0
+    return ''.join(out)
+
+def get_changed_paths():
+    out = subprocess.check_output('git diff --name-status --diff-filter=U', shell=True).decode('utf8')
+    paths = []
+    for l in out.splitlines():
+        _, path = l.split('\t')
+        if os.path.isfile(path):
+            paths.append(path)
+    return paths
+
+
+def beast_move(src, dst):
+    with open(src, 'rb') as fp:
+        src_lines = fp.read().decode('utf8').splitlines()
+    out = []
+    ignore = False
+    for l in src_lines:
+        if l.startswith(changes_prefix):
+            ignore = True
+        elif l.startswith('!!') and ignore:
+            pass
+        else:
+            out.append(l)
+
+    out = '\n'.join(out) + '\n'
+    with open(dst, 'wb') as fp:
+        fp.write(out.encode('utf8'))
+
+def has_beast_marks(path):
+    with open(path, 'rb') as fp:
+        s = fp.read().decode('utf8')
+    assert changes_prefix not in s
+
+
+def md5(fname):
+    hash_md5 = hashlib.md5()
+    with open(fname, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+def die(*args, **kwargs):
+    eprint(*args, **kwargs)
+    sys.exit(1)
+
+def file_exists(path, sha):
+    cmd = f'git cat-file -e {sha}:{path}'
+    res = subprocess.run(cmd, shell=True, env=None, capture_output=True)
+    if not res.returncode:
+        assert not res.stdout
+        return True
+    output = res.stderr.decode('utf8')
+    assert 'Not a valid object name' in output
+    return False
+
+def checkout_versions(path, head, base, merge_head):
+    for (sha, sha_id) in (
+            (head, 'head'),
+            (base, 'base'),
+            (merge_head, 'merge_head'),
+            ):
+        if sha:
+            cmd = f'git show {sha}:{path} > {path}.merge-helper.{sha_id}'
+        else:
+            cmd = f'echo "" > {path}.merge-helper.{sha_id}'
+        subprocess.check_call(cmd, shell=True, env=None, stdout=sys.stderr.buffer)
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='help merging')
+    parser.add_argument('--local-url', help='url prefix for displaying remote commit sha1s, e.g. https://github.com/moby/buildkit/commit/')
+    parser.add_argument('--remote-url', help='url prefix for displaying local commit sha1s, e.g. https://github.com/earthly/buildkit/commit/')
+    parser.add_argument('path', nargs='*', help='path of file(s) to blame')
+    args = parser.parse_args()
+
+    merge_head = get_merge_head()
+    if not merge_head:
+        die('git merge is not in process')
+
+    head = get_head()
+    base = get_merge_base(head, merge_head)
+
+    print(f'merging head={head}; base={base}; merge_head={merge_head}')
+
+    paths = args.path
+    if not paths:
+        paths = get_changed_paths()
+
+    local_url = args.local_url or ''
+    remote_url = args.remote_url or ''
+
+    for path in paths:
+        print(f'=== {path} ===')
+        head_exists = file_exists(path, head)
+        base_exists = file_exists(path, base)
+        merge_head_exists = file_exists(path, merge_head)
+
+        merge_head_blame_path = None
+        if merge_head_exists:
+            merge_head_blame_path = f'{path}.merge-helper.merge_head.blame'
+            cmd = f'git blame {merge_head} -- {path} > {merge_head_blame_path}'
+            subprocess.check_call(cmd, shell=True, env=None, stdout=sys.stderr.buffer)
+
+        head_copy = head
+        base_copy = base
+        merge_head_copy = merge_head
+
+        if not head_exists:
+            head_copy = None
+        if not base_exists:
+            base_copy = None
+        if not merge_head_exists:
+            merge_head_copy = None
+
+        checkout_versions(path, head_copy, base_copy, merge_head_copy)
+
+
+        text = format_blame(blame(path), local_url, remote_url)
+        with open(path+'.merge-helper.blame', 'wb') as fp:
+                fp.write(text.encode('utf8'))
+
+        head_path = path + '.merge-helper.head'
+        base_path = path + '.merge-helper.base'
+        conflict_path = path + '.merge-helper.blame'
+        merge_head_path = path + '.merge-helper.merge_head'
+
+        if merge_head_blame_path:
+            subprocess.check_call(['xdg-open', merge_head_blame_path], shell=False, env=None, stdout=sys.stderr.buffer)
+        cmd = ['meld', head_path, conflict_path, merge_head_path]
+        print(' '.join(cmd))
+        subprocess.check_call(cmd, shell=False, env=None, stdout=sys.stderr.buffer)
