@@ -4,6 +4,7 @@ import argparse
 import sys
 import datetime
 import dateutil.tz
+import time
 
 def format_time(t):
     fmt = "%Y-%m-%d %H:%M:%S"
@@ -16,47 +17,81 @@ def conv(now, from_tz, to_tz):
     now_to = now_from.astimezone(to_tz)
     print(f'{format_time(now_from)} is {format_time(now_to)}')
 
+def parse_time(s):
+    am = False
+    pm = False
+    if s.endswith('am'):
+        s = s[:-2]
+        am = True
+    elif s.endswith('pm'):
+        s = s[:-2]
+        pm = True
+
+    if ':' in s:
+        s = s.split(':')
+    elif len(s) > 2:
+        s = [s[:-2], s[-2:]]
+    else:
+        s = [s]
+
+    if len(s) == 1:
+        hour = int(s[0])
+        minute = 0
+        second = 0
+    elif len(s) == 2:
+        hour = int(s[0])
+        minute = int(s[1])
+        second = 0
+    elif len(s) == 3:
+        hour = int(s[0])
+        minute = int(s[1])
+        second = int(s[2])
+    else:
+        raise ValueError(s)
+
+    if (am or pm) and hour > 12:
+        raise ValueError(s)
+
+    if pm:
+        hour += 12
+
+    return datetime.datetime.combine(
+            datetime.date.today(),
+            datetime.time(hour, minute, second),
+            )
+
 def main():
     parser = argparse.ArgumentParser(
         description='converts utc to localtime and back',
         )
     parser.add_argument('--from', type=str, help='from timezone')
     parser.add_argument('--to', type=str, help='to timezone')
-    parser.add_argument('time', type=str, help='time to convert')
+    parser.add_argument('time', type=str, nargs='*', help='time to convert')
     
+    mode = 'both'
     args = parser.parse_args()
-    x = args.time.split(':')
+    if args.time:
+        try:
+            x = parse_time(args.time[0])
+            if len(args.time) > 2:
+                print(f'usage: utc <time> [utc|local]')
+                sys.exit(1)
+            if len(args.time) > 1:
+                mode = args.time[1]
+                if mode not in ('utc', 'local', 'both'):
+                    print(f'usage: utc <time> [utc|local]')
+                    sys.exit(1)
+        except:
+            print(f'unable to parse time "{args.time}"')
+            sys.exit(1)
+    else:
+        x = datetime.datetime.now()
+        mode = 'local'
 
-    try:
-        if len(x) == 1:
-            hour = int(x[0])
-            minute = 0
-            second = 0
-        elif len(x) == 2:
-            hour = int(x[0])
-            minute = int(x[1])
-            second = 0
-        elif len(x) == 3:
-            hour = int(x[0])
-            minute = int(x[1])
-            second = int(x[2])
-        else:
-            raise ValueError(args.time)
-    except:
-        print(f'unable to parse time "{args.time}"')
-        sys.exit(1)
-
-    try:
-        now = datetime.datetime.combine(
-                datetime.date.today(),
-                datetime.time(hour, minute, second),
-                )
-    except Exception as e:
-        print(f'unable to parse time "{args.time}": {e}')
-        sys.exit(1)
-
-    conv(now, dateutil.tz.tzutc(), dateutil.tz.tzlocal())
-    conv(now, dateutil.tz.tzlocal(), dateutil.tz.tzutc())
+    if mode in ('local', 'both'):
+        conv(x, dateutil.tz.tzlocal(), dateutil.tz.tzutc())
+    if mode in ('utc', 'both'):
+        conv(x, dateutil.tz.tzutc(), dateutil.tz.tzlocal())
 
 if __name__ == '__main__':
     main()
