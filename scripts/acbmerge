@@ -1,0 +1,4207 @@
+#!/usr/bin/env python3
+########## From git-imerge
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+########## From git-imerge end
+
+import subprocess
+import argparse
+import datetime
+import sys
+import os
+import hashlib
+
+from acbutils.diff import diffparse
+
+
+########## From git-imerge
+
+
+import locale
+import sys
+import re
+import subprocess
+from subprocess import CalledProcessError
+from subprocess import check_call
+import itertools
+import argparse
+from io import StringIO
+import json
+import os
+
+
+PREFERRED_ENCODING = locale.getpreferredencoding()
+
+
+# Define check_output() for ourselves, including decoding of the
+# output into PREFERRED_ENCODING:
+def check_output(*popenargs, **kwargs):
+    if 'stdout' in kwargs:
+        raise ValueError('stdout argument not allowed, it will be overridden.')
+    process = subprocess.Popen(stdout=subprocess.PIPE, *popenargs, **kwargs)
+    output = communicate(process)[0]
+    retcode = process.poll()
+    if retcode:
+        cmd = kwargs.get("args")
+        if cmd is None:
+            cmd = popenargs[0]
+        # We don't store output in the CalledProcessError because
+        # the "output" keyword parameter was not supported in
+        # Python 2.6:
+        raise CalledProcessError(retcode, cmd)
+    return output
+
+
+STATE_VERSION = (1, 3, 0)
+
+ZEROS = '0' * 40
+
+ALLOWED_GOALS = [
+    'full',
+    'rebase',
+    'rebase-with-history',
+    'border',
+    'border-with-history',
+    'border-with-history2',
+    'merge',
+    'drop',
+    'revert',
+    ]
+DEFAULT_GOAL = 'merge'
+
+
+class Failure(Exception):
+    """An exception that indicates a normal failure of the script.
+
+    Failures are reported at top level via sys.exit(str(e)) rather
+    than via a Python stack dump."""
+
+    pass
+
+
+class AnsiColor:
+    BLACK = '\033[0;30m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    MAGENTA = '\033[0;35m'
+    CYAN = '\033[0;36m'
+    B_GRAY = '\033[0;37m'
+    D_GRAY = '\033[1;30m'
+    B_RED = '\033[1;31m'
+    B_GREEN = '\033[1;32m'
+    B_YELLOW = '\033[1;33m'
+    B_BLUE = '\033[1;34m'
+    B_MAGENTA = '\033[1;35m'
+    B_CYAN = '\033[1;36m'
+    WHITE = '\033[1;37m'
+    END = '\033[0m'
+
+    @classmethod
+    def disable(cls):
+        cls.BLACK = ''
+        cls.RED = ''
+        cls.GREEN = ''
+        cls.YELLOW = ''
+        cls.BLUE = ''
+        cls.MAGENTA = ''
+        cls.CYAN = ''
+        cls.B_GRAY = ''
+        cls.D_GRAY = ''
+        cls.B_RED = ''
+        cls.B_GREEN = ''
+        cls.B_YELLOW = ''
+        cls.B_BLUE = ''
+        cls.B_MAGENTA = ''
+        cls.B_CYAN = ''
+        cls.WHITE = ''
+        cls.END = ''
+
+
+def iter_neighbors(iterable):
+    """For an iterable (x0, x1, x2, ...) generate [(x0,x1), (x1,x2), ...]."""
+
+    i = iter(iterable)
+
+    try:
+        last = next(i)
+    except StopIteration:
+        return
+
+    for x in i:
+        yield (last, x)
+        last = x
+
+
+def find_first_false(f, lo, hi):
+    """Return the smallest i in lo <= i < hi for which f(i) returns False using bisection.
+
+    If there is no such i, return hi.
+
+    """
+
+    # Loop invariant: f(i) returns True for i < lo; f(i) returns False
+    # for i >= hi.
+
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if f(mid):
+            lo = mid + 1
+        else:
+            hi = mid
+
+    return lo
+
+
+def call_silently(cmd):
+    try:
+        NULL = open(os.devnull, 'w')
+    except (IOError, AttributeError):
+        NULL = subprocess.PIPE
+
+    p = subprocess.Popen(cmd, stdout=NULL, stderr=NULL)
+    p.communicate()
+    retcode = p.wait()
+    if retcode:
+        raise CalledProcessError(retcode, cmd)
+
+
+def communicate(process, input=None):
+    """Return decoded output from process."""
+    if input is not None:
+        input = input.encode(PREFERRED_ENCODING)
+
+    output, error = process.communicate(input)
+
+    output = None if output is None else output.decode(PREFERRED_ENCODING)
+    error = None if error is None else error.decode(PREFERRED_ENCODING)
+
+    return (output, error)
+
+
+if sys.hexversion >= 0x03000000:
+    # In Python 3.x, os.environ keys and values must be unicode
+    # strings:
+    def env_encode(s):
+        """Use unicode keys or values unchanged in os.environ."""
+
+        return s
+
+else:
+    # In Python 2.x, os.environ keys and values must be byte
+    # strings:
+    def env_encode(s):
+        """Encode unicode keys or values for use in os.environ."""
+
+        return s.encode(PREFERRED_ENCODING)
+
+
+class UncleanWorkTreeError(Failure):
+    pass
+
+
+class AutomaticMergeFailed(Exception):
+    def __init__(self, commit1, commit2):
+        Exception.__init__(
+            self, 'Automatic merge of %s and %s failed' % (commit1, commit2,)
+            )
+        self.commit1, self.commit2 = commit1, commit2
+
+
+class InvalidBranchNameError(Failure):
+    pass
+
+
+class NotFirstParentAncestorError(Failure):
+    def __init__(self, commit1, commit2):
+        Failure.__init__(
+            self,
+            'Commit "%s" is not a first-parent ancestor of "%s"'
+            % (commit1, commit2),
+            )
+
+
+class NonlinearAncestryError(Failure):
+    def __init__(self, commit1, commit2):
+        Failure.__init__(
+            self,
+            'The history "%s..%s" is not linear'
+            % (commit1, commit2),
+            )
+
+
+class NothingToDoError(Failure):
+    def __init__(self, src_tip, dst_tip):
+        Failure.__init__(
+            self,
+            'There are no commits on "%s" that are not already in "%s"'
+            % (src_tip, dst_tip),
+            )
+
+
+class GitTemporaryHead(object):
+    """A context manager that records the current HEAD state then restores it.
+
+    This should only be used when the working copy is clean. message
+    is used for the reflog.
+
+    """
+
+    def __init__(self, git, message):
+        self.git = git
+        self.message = message
+
+    def __enter__(self):
+        self.head_name = self.git.get_head_refname()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.head_name:
+            try:
+                self.git.restore_head(self.head_name, self.message)
+            except CalledProcessError as e:
+                raise Failure(
+                    'Could not restore HEAD to %r!:    %s\n'
+                    % (self.head_name, e.message,)
+                    )
+
+        return False
+
+
+class GitRepository(object):
+    BRANCH_PREFIX = 'refs/heads/'
+
+    MERGE_STATE_REFNAME_RE = re.compile(
+        r"""
+        ^
+        refs\/imerge\/
+        (?P<name>.+)
+        \/state
+        $
+        """,
+        re.VERBOSE,
+        )
+
+    def __init__(self):
+        self.git_dir_cache = None
+
+    def git_dir(self):
+        if self.git_dir_cache is None:
+            self.git_dir_cache = check_output(
+                ['git', 'rev-parse', '--git-dir']
+                ).rstrip('\n')
+
+        return self.git_dir_cache
+
+    def check_imerge_name_format(self, name):
+        """Check that name is a valid imerge name."""
+
+        try:
+            call_silently(
+                ['git', 'check-ref-format', 'refs/imerge/%s' % (name,)]
+                )
+        except CalledProcessError:
+            raise Failure('Name %r is not a valid refname component!' % (name,))
+
+    def check_branch_name_format(self, name):
+        """Check that name is a valid branch name."""
+
+        try:
+            call_silently(
+                ['git', 'check-ref-format', 'refs/heads/%s' % (name,)]
+                )
+        except CalledProcessError:
+            raise InvalidBranchNameError('Name %r is not a valid branch name!' % (name,))
+
+    def iter_existing_imerge_names(self):
+        """Iterate over the names of existing MergeStates in this repo."""
+
+        for line in check_output(['git', 'for-each-ref', 'refs/imerge']).splitlines():
+            (sha1, type, refname) = line.split()
+            if type == 'blob':
+                m = GitRepository.MERGE_STATE_REFNAME_RE.match(refname)
+                if m:
+                    yield m.group('name')
+
+    def set_default_imerge_name(self, name):
+        """Set the default merge to the specified one.
+
+        name can be None to cause the default to be cleared."""
+
+        if name is None:
+            try:
+                check_call(['git', 'config', '--unset', 'imerge.default'])
+            except CalledProcessError as e:
+                if e.returncode == 5:
+                    # Value was not set
+                    pass
+                else:
+                    raise
+        else:
+            check_call(['git', 'config', 'imerge.default', name])
+
+    def get_default_imerge_name(self):
+        """Get the name of the default merge, or None if it is currently unset."""
+
+        try:
+            return check_output(['git', 'config', 'imerge.default']).rstrip()
+        except CalledProcessError:
+            return None
+
+    def get_default_edit(self):
+        """Should '--edit' be used when committing intermediate user merges?
+
+        When 'git imerge continue' or 'git imerge record' finds a user
+        merge that can be committed, should it (by default) ask the user
+        to edit the commit message? This behavior can be configured via
+        'imerge.editmergemessages'. If it is not configured, return False.
+
+        Please note that this function is only used to choose the default
+        value. It can be overridden on the command line using '--edit' or
+        '--no-edit'.
+
+        """
+
+        try:
+            return {'true' : True, 'false' : False}[
+                check_output(
+                    ['git', 'config', '--bool', 'imerge.editmergemessages']
+                    ).rstrip()
+                ]
+        except CalledProcessError:
+            return False
+
+    def unstaged_changes(self):
+        """Return True iff there are unstaged changes in the working copy"""
+
+        try:
+            check_call(['git', 'diff-files', '--quiet', '--ignore-submodules'])
+            return False
+        except CalledProcessError:
+            return True
+
+    def uncommitted_changes(self):
+        """Return True iff the index contains uncommitted changes."""
+
+        try:
+            check_call([
+                'git', 'diff-index', '--cached', '--quiet',
+                '--ignore-submodules', 'HEAD', '--',
+                ])
+            return False
+        except CalledProcessError:
+            return True
+
+    def get_commit_sha1(self, arg):
+        """Convert arg into a SHA1 and verify that it refers to a commit.
+
+        If not, raise ValueError."""
+
+        try:
+            return self.rev_parse('%s^{commit}' % (arg,))
+        except CalledProcessError:
+            raise ValueError('%r does not refer to a valid git commit' % (arg,))
+
+    def refresh_index(self):
+        process = subprocess.Popen(
+            ['git', 'update-index', '-q', '--ignore-submodules', '--refresh'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        out, err = communicate(process)
+        retcode = process.poll()
+        if retcode:
+            raise UncleanWorkTreeError(err.rstrip() or out.rstrip())
+
+    def verify_imerge_name_available(self, name):
+        self.check_imerge_name_format(name)
+        if check_output(['git', 'for-each-ref', 'refs/imerge/%s' % (name,)]):
+            raise Failure('Name %r is already in use!' % (name,))
+
+    def check_imerge_exists(self, name):
+        """Verify that a MergeState with the given name exists.
+
+        Just check for the existence, readability, and compatible
+        version of the 'state' reference.  If the reference doesn't
+        exist, just return False.  If it exists but is unusable for
+        some other reason, raise an exception."""
+
+        self.check_imerge_name_format(name)
+        state_refname = 'refs/imerge/%s/state' % (name,)
+        for line in check_output(['git', 'for-each-ref', state_refname]).splitlines():
+            (sha1, type, refname) = line.split()
+            if refname == state_refname and type == 'blob':
+                self.read_imerge_state_dict(name)
+                # If that didn't throw an exception:
+                return True
+        else:
+            return False
+
+    def read_imerge_state_dict(self, name):
+        state_string = check_output(
+            ['git', 'cat-file', 'blob', 'refs/imerge/%s/state' % (name,)],
+            )
+        state = json.loads(state_string)
+
+        # Convert state['version'] to a tuple of integers, and verify
+        # that it is compatible with this version of the script:
+        version = tuple(int(i) for i in state['version'].split('.'))
+        if version[0] != STATE_VERSION[0] or version[1] > STATE_VERSION[1]:
+            raise Failure(
+                'The format of imerge %s (%s) is not compatible with this script version.'
+                % (name, state['version'],)
+                )
+        state['version'] = version
+
+        return state
+
+    def read_imerge_state(self, name):
+        """Read the state associated with the specified imerge.
+
+        Return the tuple
+
+            (state_dict, {(i1, i2) : (sha1, source), ...})
+
+        , where source is 'auto' or 'manual'. Validity is checked only
+        lightly.
+
+        """
+
+        merge_ref_re = re.compile(
+            r"""
+            ^
+            refs\/imerge\/
+            """ + re.escape(name) + r"""
+            \/(?P<source>auto|manual)\/
+            (?P<i1>0|[1-9][0-9]*)
+            \-
+            (?P<i2>0|[1-9][0-9]*)
+            $
+            """,
+            re.VERBOSE,
+            )
+
+        state_ref_re = re.compile(
+            r"""
+            ^
+            refs\/imerge\/
+            """ + re.escape(name) + r"""
+            \/state
+            $
+            """,
+            re.VERBOSE,
+            )
+
+        state = None
+
+        # A map {(i1, i2) : (sha1, source)}:
+        merges = {}
+
+        # refnames that were found but not understood:
+        unexpected = []
+
+        for line in check_output([
+                'git', 'for-each-ref', 'refs/imerge/%s' % (name,)
+                ]).splitlines():
+            (sha1, type, refname) = line.split()
+            m = merge_ref_re.match(refname)
+            if m:
+                if type != 'commit':
+                    raise Failure('Reference %r is not a commit!' % (refname,))
+                i1, i2 = int(m.group('i1')), int(m.group('i2'))
+                source = m.group('source')
+                merges[i1, i2] = (sha1, source)
+                continue
+
+            m = state_ref_re.match(refname)
+            if m:
+                if type != 'blob':
+                    raise Failure('Reference %r is not a blob!' % (refname,))
+                state = self.read_imerge_state_dict(name)
+                continue
+
+            unexpected.append(refname)
+
+        if state is None:
+            raise Failure(
+                'No state found; it should have been a blob reference at '
+                '"refs/imerge/%s/state"' % (name,)
+                )
+
+        if unexpected:
+            raise Failure(
+                'Unexpected reference(s) found in "refs/imerge/%s" namespace:\n    %s\n'
+                % (name, '\n    '.join(unexpected),)
+                )
+
+        return (state, merges)
+
+    def write_imerge_state_dict(self, name, state):
+        state_string = json.dumps(state, sort_keys=True) + '\n'
+
+        cmd = ['git', 'hash-object', '-t', 'blob', '-w', '--stdin']
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        out = communicate(p, input=state_string)[0]
+        retcode = p.poll()
+        if retcode:
+            raise CalledProcessError(retcode, cmd)
+        sha1 = out.strip()
+        check_call([
+            'git', 'update-ref',
+            '-m', 'imerge %r: Record state' % (name,),
+            'refs/imerge/%s/state' % (name,),
+            sha1,
+            ])
+
+    def is_ancestor(self, commit1, commit2):
+        """Return True iff commit1 is an ancestor (or equal to) commit2."""
+
+        if commit1 == commit2:
+            return True
+        else:
+            return int(
+                check_output([
+                    'git', 'rev-list', '--count', '--ancestry-path',
+                    '%s..%s' % (commit1, commit2,),
+                    ]).strip()
+                ) != 0
+
+    def is_ff(self, refname, commit):
+        """Would updating refname to commit be a fast-forward update?
+
+        Return True iff refname is not currently set or it points to an
+        ancestor of commit.
+
+        """
+
+        try:
+            ref_oldval = self.get_commit_sha1(refname)
+        except ValueError:
+            # refname doesn't already exist; no problem.
+            return True
+        else:
+            return self.is_ancestor(ref_oldval, commit)
+
+    def automerge(self, commit1, commit2, msg=None):
+        """Attempt an automatic merge of commit1 and commit2.
+
+        Return the SHA1 of the resulting commit, or raise
+        AutomaticMergeFailed on error.  This must be called with a clean
+        worktree."""
+
+        call_silently(['git', 'checkout', '-f', commit1])
+        cmd = ['git', '-c', 'rerere.enabled=false', 'merge']
+        if msg is not None:
+            cmd += ['-m', msg]
+        cmd += [commit2]
+        try:
+            call_silently(cmd)
+        except CalledProcessError:
+            self.abort_merge()
+            raise AutomaticMergeFailed(commit1, commit2)
+        else:
+            return self.get_commit_sha1('HEAD')
+
+    def manualmerge(self, commit, msg):
+        """Initiate a merge of commit into the current HEAD."""
+
+        check_call(['git', 'merge', '--no-commit', '-m', msg, commit,])
+
+    def require_clean_work_tree(self, action):
+        """Verify that the current tree is clean.
+
+        The code is a Python translation of the git-sh-setup(1) function
+        of the same name."""
+
+        process = subprocess.Popen(
+            ['git', 'rev-parse', '--verify', 'HEAD'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        err = communicate(process)[1]
+        retcode = process.poll()
+        if retcode:
+            raise UncleanWorkTreeError(err.rstrip())
+
+        self.refresh_index()
+
+        error = []
+        if self.unstaged_changes():
+            error.append('Cannot %s: You have unstaged changes.' % (action,))
+
+        if self.uncommitted_changes():
+            if not error:
+                error.append('Cannot %s: Your index contains uncommitted changes.' % (action,))
+            else:
+                error.append('Additionally, your index contains uncommitted changes.')
+
+        if error:
+            raise UncleanWorkTreeError('\n'.join(error))
+
+    def simple_merge_in_progress(self):
+        """Return True iff a merge (of a single branch) is in progress."""
+
+        try:
+            with open(os.path.join(self.git_dir(), 'MERGE_HEAD')) as f:
+                heads = [line.rstrip() for line in f]
+        except IOError:
+            return False
+
+        return len(heads) == 1
+
+    def commit_user_merge(self, edit_log_msg=None):
+        """If a merge is in progress and ready to be committed, commit it.
+
+        If a simple merge is in progress and any changes in the working
+        tree are staged, commit the merge commit and return True.
+        Otherwise, return False.
+
+        """
+
+        if not self.simple_merge_in_progress():
+            return False
+
+        # Check if all conflicts are resolved and everything in the
+        # working tree is staged:
+        self.refresh_index()
+        if self.unstaged_changes():
+            raise UncleanWorkTreeError(
+                'Cannot proceed: You have unstaged changes.'
+                )
+
+        # A merge is in progress, and either all changes have been staged
+        # or no changes are necessary. Create a merge commit.
+        cmd = ['git', 'commit', '--no-verify']
+
+        if edit_log_msg is None:
+            edit_log_msg = self.get_default_edit()
+
+        if edit_log_msg:
+            cmd += ['--edit']
+        else:
+            cmd += ['--no-edit']
+
+        try:
+            check_call(cmd)
+        except CalledProcessError:
+            raise Failure('Could not commit staged changes.')
+
+        return True
+
+    def create_commit_chain(self, base, path):
+        """Point refname at the chain of commits indicated by path.
+
+        path is a list [(commit, metadata), ...]. Create a series of
+        commits corresponding to the entries in path. Each commit's tree
+        is taken from the corresponding old commit, and each commit's
+        metadata is taken from the corresponding metadata commit. Use base
+        as the parent of the first commit, or make the first commit a root
+        commit if base is None. Reuse existing commits from the list
+        whenever possible.
+
+        Return a commit object corresponding to the last commit in the
+        chain.
+
+        """
+
+        reusing = True
+        if base is None:
+            if not path:
+                raise ValueError('neither base nor path specified')
+            parents = []
+        else:
+            parents = [base]
+
+        for (commit, metadata) in path:
+            if reusing:
+                if commit == metadata and self.get_commit_parents(commit) == parents:
+                    # We can reuse this commit, too.
+                    parents = [commit]
+                    continue
+                else:
+                    reusing = False
+
+            # Create a commit, copying the old log message and author info
+            # from the metadata commit:
+            tree = self.get_tree(commit)
+            new_commit = self.commit_tree(
+                tree, parents,
+                msg=self.get_log_message(metadata),
+                metadata=self.get_author_info(metadata),
+                )
+            parents = [new_commit]
+
+        [commit] = parents
+        return commit
+
+    def rev_parse(self, arg):
+        return check_output(['git', 'rev-parse', '--verify', '--quiet', arg]).strip()
+
+    def rev_list_with_parents(self, *args):
+        """Iterate over (commit, [parent,...])."""
+
+        cmd = ['git', 'log', '--format=%H %P'] + list(args)
+        for line in check_output(cmd).splitlines():
+            commits = line.strip().split()
+            yield (commits[0], commits[1:])
+
+    def summarize_commit(self, commit):
+        """Summarize `commit` to stdout."""
+
+        check_call(['git', '--no-pager', 'log', '--no-walk', commit])
+
+    def get_author_info(self, commit):
+        """Return environment settings to set author metadata.
+
+        Return a map {str : str}."""
+
+        # We use newlines as separators here because msysgit has problems
+        # with NUL characters; see
+        #
+        #     https://github.com/mhagger/git-imerge/pull/71
+        a = check_output([
+            'git', '--no-pager', 'log', '-n1',
+            '--format=%an%n%ae%n%ai', commit
+            ]).strip().splitlines()
+
+        return {
+            'GIT_AUTHOR_NAME': env_encode(a[0]),
+            'GIT_AUTHOR_EMAIL': env_encode(a[1]),
+            'GIT_AUTHOR_DATE': env_encode(a[2]),
+            }
+
+    def get_log_message(self, commit):
+        contents = check_output([
+            'git', 'cat-file', 'commit', commit,
+            ]).splitlines(True)
+        contents = contents[contents.index('\n') + 1:]
+        if contents and contents[-1][-1:] != '\n':
+            contents.append('\n')
+        return ''.join(contents)
+
+    def get_commit_parents(self, commit):
+        """Return a list containing the parents of commit."""
+
+        return check_output(
+            ['git', '--no-pager', 'log', '--no-walk', '--pretty=format:%P', commit]
+            ).strip().split()
+
+    def get_tree(self, arg):
+        return self.rev_parse('%s^{tree}' % (arg,))
+
+    def update_ref(self, refname, value, msg, deref=True):
+        if deref:
+            opt = []
+        else:
+            opt = ['--no-deref']
+
+        check_call(['git', 'update-ref'] + opt + ['-m', msg, refname, value])
+
+    def delete_ref(self, refname, msg, deref=True):
+        if deref:
+            opt = []
+        else:
+            opt = ['--no-deref']
+
+        check_call(['git', 'update-ref'] + opt + ['-m', msg, '-d', refname])
+
+    def delete_imerge_refs(self, name):
+        stdin = ''.join(
+            'delete %s\n' % (refname,)
+            for refname in check_output([
+                    'git', 'for-each-ref',
+                    '--format=%(refname)',
+                    'refs/imerge/%s' % (name,)
+                    ]).splitlines()
+            )
+
+        process = subprocess.Popen(
+            [
+                'git', 'update-ref',
+                '-m', 'imerge: remove merge %r' % (name,),
+                '--stdin',
+                ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+        out = communicate(process, input=stdin)[0]
+        retcode = process.poll()
+        if retcode:
+            sys.stderr.write(
+                'Warning: error removing references:\n%s' % (out,)
+                )
+
+    def detach(self, msg):
+        """Detach HEAD. msg is used for the reflog."""
+
+        self.update_ref('HEAD', 'HEAD^0', msg, deref=False)
+
+    def reset_hard(self, commit):
+        check_call(['git', 'reset', '--hard', commit])
+
+    def amend(self):
+        check_call(['git', 'commit', '--amend'])
+
+    def abort_merge(self):
+        # We don't use "git merge --abort" here because it was
+        # only added in git version 1.7.4.
+        check_call(['git', 'reset', '--merge'])
+
+    def compute_best_merge_base(self, tip1, tip2):
+        try:
+            merge_bases = check_output(['git', 'merge-base', '--all', tip1, tip2]).splitlines()
+        except CalledProcessError:
+            raise Failure('Cannot compute merge base for %r and %r' % (tip1, tip2))
+        if not merge_bases:
+            raise Failure('%r and %r do not have a common merge base' % (tip1, tip2))
+        if len(merge_bases) == 1:
+            return merge_bases[0]
+
+        # There are multiple merge bases. The "best" one is the one that
+        # is the "closest" to the tips, which we define to be the one with
+        # the fewest non-merge commits in "merge_base..tip". (It can be
+        # shown that the result is independent of which tip is used in the
+        # computation.)
+        best_base = best_count = None
+        for merge_base in merge_bases:
+            cmd = ['git', 'rev-list', '--no-merges', '--count', '%s..%s' % (merge_base, tip1)]
+            count = int(check_output(cmd).strip())
+            if best_base is None or count < best_count:
+                best_base = merge_base
+                best_count = count
+
+        return best_base
+
+    def linear_ancestry(self, commit1, commit2, first_parent):
+        """Compute a linear ancestry between commit1 and commit2.
+
+        Our goal is to find a linear series of commits connecting
+        `commit1` and `commit2`. We do so as follows:
+
+        * If all of the commits in
+
+              git rev-list --ancestry-path commit1..commit2
+
+          are on a linear chain, return that.
+
+        * If there are multiple paths between `commit1` and `commit2` in
+          that list of commits, then
+
+          * If `first_parent` is not set, then raise an
+            `NonlinearAncestryError` exception.
+
+          * If `first_parent` is set, then, at each merge commit, follow
+            the first parent that is in that list of commits.
+
+        Return a list of SHA-1s in 'chronological' order.
+
+        Raise NotFirstParentAncestorError if commit1 is not an ancestor of
+        commit2.
+
+        """
+
+        oid1 = self.rev_parse(commit1)
+        oid2 = self.rev_parse(commit2)
+
+        #print(f'from {oid1} to {oid2}')
+
+        parentage = {oid1 : []}
+        for (commit, parents) in self.rev_list_with_parents(
+                '--ancestry-path', '--topo-order', '%s..%s' % (oid1, oid2)
+                ):
+            parentage[commit] = parents
+
+        commits = []
+
+        commit = oid2
+        while commit != oid1:
+            parents = parentage.get(commit, [])
+
+            # Only consider parents that are in the ancestry path:
+            included_parents = [
+                parent
+                for parent in parents
+                if parent in parentage
+            ]
+
+            if not included_parents:
+                raise NotFirstParentAncestorError(commit1, commit2)
+            elif len(included_parents) == 1 or first_parent:
+                parent = included_parents[0]
+            else:
+                raise NonlinearAncestryError(commit1, commit2)
+
+            commits.append(commit)
+            commit = parent
+        #print(f'breaking with {commit}: {commits}')
+        commits.reverse()
+        return commits
+
+    def get_boundaries(self, tip1, tip2, first_parent):
+        """Get the boundaries of an incremental merge.
+
+        Given the tips of two branches that should be merged, return
+        (merge_base, commits1, commits2) describing the edges of the
+        imerge.  Raise Failure if there are any problems."""
+
+        merge_base = self.compute_best_merge_base(tip1, tip2)
+
+        commits1 = self.linear_ancestry(merge_base, tip1, first_parent)
+        if not commits1:
+            raise NothingToDoError(tip1, tip2)
+
+        commits2 = self.linear_ancestry(merge_base, tip2, first_parent)
+        if not commits2:
+            raise NothingToDoError(tip2, tip1)
+
+        return (merge_base, commits1, commits2)
+
+    def get_head_refname(self, short=False):
+        """Return the name of the reference that is currently checked out.
+
+        If `short` is set, return it as a branch name. If HEAD is
+        currently detached, return None."""
+
+        cmd = ['git', 'symbolic-ref', '--quiet']
+        if short:
+            cmd += ['--short']
+        cmd += ['HEAD']
+        try:
+            return check_output(cmd).strip()
+        except CalledProcessError:
+            return None
+
+    def restore_head(self, refname, message):
+        check_call(['git', 'symbolic-ref', '-m', message, 'HEAD', refname])
+        check_call(['git', 'reset', '--hard'])
+
+    def checkout(self, refname, quiet=False):
+        cmd = ['git', 'checkout']
+        if quiet:
+            cmd += ['--quiet']
+        if refname.startswith(GitRepository.BRANCH_PREFIX):
+            target = refname[len(GitRepository.BRANCH_PREFIX):]
+        else:
+            target = '%s^0' % (refname,)
+        cmd += [target]
+        check_call(cmd)
+
+    def commit_tree(self, tree, parents, msg, metadata=None):
+        """Create a commit containing the specified tree.
+
+        metadata can be author or committer information to be added to the
+        environment, as str objects; e.g., {'GIT_AUTHOR_NAME' : 'me'}.
+
+        Return the SHA-1 of the new commit object."""
+
+        cmd = ['git', 'commit-tree', tree]
+        for parent in parents:
+            cmd += ['-p', parent]
+
+        if metadata is not None:
+            env = os.environ.copy()
+            env.update(metadata)
+        else:
+            env = os.environ
+
+        process = subprocess.Popen(
+            cmd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            )
+        out = communicate(process, input=msg)[0]
+        retcode = process.poll()
+
+        if retcode:
+            # We don't store the output in the CalledProcessError because
+            # the "output" keyword parameter was not supported in Python
+            # 2.6:
+            raise CalledProcessError(retcode, cmd)
+
+        return out.strip()
+
+    def revert(self, commit):
+        """Apply the inverse of commit^..commit to HEAD and commit."""
+
+        cmd = ['git', 'revert', '--no-edit']
+        if len(self.get_commit_parents(commit)) > 1:
+            cmd += ['-m', '1']
+        cmd += [commit]
+        check_call(cmd)
+
+    def reparent(self, commit, parent_sha1s, msg=None):
+        """Create a new commit object like commit, but with the specified parents.
+
+        commit is the SHA1 of an existing commit and parent_sha1s is a
+        list of SHA1s.  Create a new commit exactly like that one, except
+        that it has the specified parent commits.  Return the SHA1 of the
+        resulting commit object, which is already stored in the object
+        database but is not yet referenced by anything.
+
+        If msg is set, then use it as the commit message for the new
+        commit."""
+
+        old_commit = check_output(['git', 'cat-file', 'commit', commit])
+        separator = old_commit.index('\n\n')
+        headers = old_commit[:separator + 1].splitlines(True)
+        rest = old_commit[separator + 2:]
+
+        new_commit = StringIO()
+        for i in range(len(headers)):
+            line = headers[i]
+            if line.startswith('tree '):
+                new_commit.write(line)
+                for parent_sha1 in parent_sha1s:
+                    new_commit.write('parent %s\n' % (parent_sha1,))
+            elif line.startswith('parent '):
+                # Discard old parents:
+                pass
+            else:
+                new_commit.write(line)
+
+        new_commit.write('\n')
+        if msg is None:
+            new_commit.write(rest)
+        else:
+            new_commit.write(msg)
+            if not msg.endswith('\n'):
+                new_commit.write('\n')
+
+        process = subprocess.Popen(
+            ['git', 'hash-object', '-t', 'commit', '-w', '--stdin'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            )
+        out = communicate(process, input=new_commit.getvalue())[0]
+        retcode = process.poll()
+        if retcode:
+            raise Failure('Could not reparent commit %s' % (commit,))
+        return out.strip()
+
+    def temporary_head(self, message):
+        """Return a context manager to manage a temporary HEAD.
+
+        On entry, record the current HEAD state. On exit, restore it.
+        message is used for the reflog.
+
+        """
+
+        return GitTemporaryHead(self, message)
+
+
+class MergeRecord(object):
+    # Bits for the flags field:
+
+    # There is a saved successful auto merge:
+    SAVED_AUTO = 0x01
+
+    # An auto merge (which may have been unsuccessful) has been done:
+    NEW_AUTO = 0x02
+
+    # There is a saved successful manual merge:
+    SAVED_MANUAL = 0x04
+
+    # A manual merge (which may have been unsuccessful) has been done:
+    NEW_MANUAL = 0x08
+
+    # A merge that is currently blocking the merge frontier:
+    BLOCKED = 0x10
+
+    # Some useful bit combinations:
+    SAVED = SAVED_AUTO | SAVED_MANUAL
+    NEW = NEW_AUTO | NEW_MANUAL
+
+    AUTO = SAVED_AUTO | NEW_AUTO
+    MANUAL = SAVED_MANUAL | NEW_MANUAL
+
+    ALLOWED_INITIAL_FLAGS = [
+        SAVED_AUTO,
+        SAVED_MANUAL,
+        NEW_AUTO,
+        NEW_MANUAL,
+        ]
+
+    def __init__(self, sha1=None, flags=0):
+        # The currently believed correct merge, or None if it is
+        # unknown or the best attempt was unsuccessful.
+        self.sha1 = sha1
+
+        if self.sha1 is None:
+            if flags != 0:
+                raise ValueError('Initial flags (%s) for sha1=None should be 0' % (flags,))
+        elif flags not in self.ALLOWED_INITIAL_FLAGS:
+            raise ValueError('Initial flags (%s) is invalid' % (flags,))
+
+        # See bits above.
+        self.flags = flags
+
+    def record_merge(self, sha1, source):
+        """Record a merge at this position.
+
+        source must be SAVED_AUTO, SAVED_MANUAL, NEW_AUTO, or NEW_MANUAL."""
+
+        if source == self.SAVED_AUTO:
+            # SAVED_AUTO is recorded in any case, but only used if it
+            # is the only info available.
+            if self.flags & (self.MANUAL | self.NEW) == 0:
+                self.sha1 = sha1
+            self.flags |= source
+        elif source == self.NEW_AUTO:
+            # NEW_AUTO is silently ignored if any MANUAL value is
+            # already recorded.
+            if self.flags & self.MANUAL == 0:
+                self.sha1 = sha1
+                self.flags |= source
+        elif source == self.SAVED_MANUAL:
+            # SAVED_MANUAL is recorded in any case, but only used if
+            # no NEW_MANUAL is available.
+            if self.flags & self.NEW_MANUAL == 0:
+                self.sha1 = sha1
+            self.flags |= source
+        elif source == self.NEW_MANUAL:
+            # NEW_MANUAL is always used, and also causes NEW_AUTO to
+            # be forgotten if present.
+            self.sha1 = sha1
+            self.flags = (self.flags | source) & ~self.NEW_AUTO
+        else:
+            raise ValueError('Undefined source: %s' % (source,))
+
+    def record_blocked(self, blocked):
+        if blocked:
+            self.flags |= self.BLOCKED
+        else:
+            self.flags &= ~self.BLOCKED
+
+    def is_known(self):
+        return self.sha1 is not None
+
+    def is_blocked(self):
+        return self.flags & self.BLOCKED != 0
+
+    def is_manual(self):
+        return self.flags & self.MANUAL != 0
+
+    def save(self, git, name, i1, i2):
+        """If this record has changed, save it."""
+
+        def set_ref(source):
+            git.update_ref(
+                'refs/imerge/%s/%s/%d-%d' % (name, source, i1, i2),
+                self.sha1,
+                'imerge %r: Record %s merge' % (name, source,),
+                )
+
+        def clear_ref(source):
+            git.delete_ref(
+                'refs/imerge/%s/%s/%d-%d' % (name, source, i1, i2),
+                'imerge %r: Remove obsolete %s merge' % (name, source,),
+                )
+
+        if self.flags & self.MANUAL:
+            if self.flags & self.AUTO:
+                # Any MANUAL obsoletes any AUTO:
+                if self.flags & self.SAVED_AUTO:
+                    clear_ref('auto')
+
+                self.flags &= ~self.AUTO
+
+            if self.flags & self.NEW_MANUAL:
+                # Convert NEW_MANUAL to SAVED_MANUAL.
+                if self.sha1:
+                    set_ref('manual')
+                    self.flags |= self.SAVED_MANUAL
+                elif self.flags & self.SAVED_MANUAL:
+                    # Delete any existing SAVED_MANUAL:
+                    clear_ref('manual')
+                    self.flags &= ~self.SAVED_MANUAL
+                self.flags &= ~self.NEW_MANUAL
+
+        elif self.flags & self.NEW_AUTO:
+            # Convert NEW_AUTO to SAVED_AUTO.
+            if self.sha1:
+                set_ref('auto')
+                self.flags |= self.SAVED_AUTO
+            elif self.flags & self.SAVED_AUTO:
+                # Delete any existing SAVED_AUTO:
+                clear_ref('auto')
+                self.flags &= ~self.SAVED_AUTO
+            self.flags &= ~self.NEW_AUTO
+
+
+class UnexpectedMergeFailure(Exception):
+    def __init__(self, msg, i1, i2):
+        Exception.__init__(self, msg)
+        self.i1, self.i2 = i1, i2
+
+
+class BlockCompleteError(Exception):
+    pass
+
+
+class FrontierBlockedError(Exception):
+    def __init__(self, msg, i1, i2):
+        Exception.__init__(self, msg)
+        self.i1 = i1
+        self.i2 = i2
+
+
+class NotABlockingCommitError(Exception):
+    pass
+
+
+def find_frontier_blocks(block):
+    """Iterate over the frontier blocks for the specified block.
+
+    Use bisection to find the blocks. Iterate over the blocks starting
+    in the bottom left and ending at the top right. Record in block
+    any blockers that we find.
+
+    We make the following assumptions (using Python subscript
+    notation):
+
+    0. All of the merges in block[1:,0] and block[0,1:] are
+       already known.  (This is an invariant of the Block class.)
+
+    1. If a direct merge can be done between block[i1-1,0] and
+       block[0,i2-1], then all of the pairwise merges in
+       block[1:i1, 1:i2] can also be done.
+
+    2. If a direct merge fails between block[i1-1,0] and
+       block[0,i2-1], then all of the pairwise merges in
+       block[i1-1:,i2-1:] would also fail.
+
+    Under these assumptions, the merge frontier is a stepstair
+    pattern going from the bottom-left to the top-right, and
+    bisection can be used to find the transition between mergeable
+    and conflicting in any row or column.
+
+    Of course these assumptions are not rigorously true, so the
+    MergeFrontier returned by this function is only an
+    approximation of the real merge diagram.  We check for and
+    correct such inconsistencies later.
+
+    """
+
+    # Given that these diagrams typically have few blocks, check
+    # the end of a range first to see if the whole range can be
+    # determined, and fall back to bisection otherwise.  We
+    # determine the frontier block by block, starting in the lower
+    # left.
+
+    if block.len1 <= 1 or block.len2 <= 1 or block.is_blocked(1, 1):
+        return
+
+    if block.is_mergeable(block.len1 - 1, block.len2 - 1):
+        # The whole block is mergable!
+        yield block
+        return
+
+    if not block.is_mergeable(1, 1):
+        # There are no mergeable blocks in block; therefore,
+        # block[1,1] must itself be unmergeable.  Record that
+        # fact:
+        block[1, 1].record_blocked(True)
+        return
+
+    # At this point, we know that there is at least one mergeable
+    # commit in the first column.  Find the height of the success
+    # block in column 1:
+    i1 = 1
+    i2 = find_first_false(
+        lambda i: block.is_mergeable(i1, i),
+        2, block.len2,
+        )
+
+    # Now we know that (1,i2-1) is mergeable but (1,i2) is not;
+    # e.g., (i1, i2) is like 'A' (or maybe 'B') in the following
+    # diagram (where '*' means mergeable, 'x' means not mergeable,
+    # and '?' means indeterminate) and that the merge under 'A' is
+    # not mergeable:
+    #
+    #          i1
+    #
+    #        0123456
+    #      0 *******
+    #      1 **?????
+    #  i2  2 **?????
+    #      3 **?????
+    #      4 *Axxxxx
+    #      5 *xxxxxx
+    #         B
+
+    while True:
+        if i2 == 1:
+            break
+
+        # At this point in the loop, we know that any blocks to
+        # the left of 'A' have already been recorded, (i1, i2-1)
+        # is mergeable but (i1, i2) is not; e.g., we are at a
+        # place like 'A' in the following diagram:
+        #
+        #          i1
+        #
+        #        0123456
+        #      0 **|****
+        #      1 **|*???
+        #  i2  2 **|*???
+        #      3 **|Axxx
+        #      4 --+xxxx
+        #      5 *xxxxxx
+        #
+        # This implies that (i1, i2) is the first unmergeable
+        # commit in a blocker block (though blocker blocks are not
+        # recorded explicitly).  It also implies that a mergeable
+        # block has its last mergeable commit somewhere in row
+        # i2-1; find its width.
+        if (
+                i1 == block.len1 - 1
+                or block.is_mergeable(block.len1 - 1, i2 - 1)
+                ):
+            yield block[:block.len1, :i2]
+            break
+        else:
+            i1 = find_first_false(
+                lambda i: block.is_mergeable(i, i2 - 1),
+                i1 + 1, block.len1 - 1,
+                )
+            yield block[:i1, :i2]
+
+        # At this point in the loop, (i1-1, i2-1) is mergeable but
+        # (i1, i2-1) is not; e.g., 'A' in the following diagram:
+        #
+        #          i1
+        #
+        #        0123456
+        #      0 **|*|**
+        #      1 **|*|??
+        #  i2  2 --+-+xx
+        #      3 **|xxAx
+        #      4 --+xxxx
+        #      5 *xxxxxx
+        #
+        # The block ending at (i1-1,i2-1) has just been recorded.
+        # Now find the height of the conflict rectangle at column
+        # i1 and fill it in:
+        if i2 - 1 == 1 or not block.is_mergeable(i1, 1):
+            break
+        else:
+            i2 = find_first_false(
+                lambda i: block.is_mergeable(i1, i),
+                2, i2 - 1,
+                )
+
+
+def write_diagram_with_axes(f, diagram, tip1, tip2):
+    """Write a diagram of one-space-wide characters to file-like object f.
+
+    Include integers along the top and left sides showing the indexes
+    corresponding to the rows and columns.
+
+    """
+
+    len1 = len(diagram)
+    len2 = len(diagram[0])
+
+    # Write the line of i1 numbers:
+    f.write('   ')
+    for i1 in range(0, len1, 5):
+        f.write('%5d' % (i1,))
+
+    if (len1 - 1) % 5 == 0:
+        # The last multiple-of-five integer that we just wrote was
+        # the index of the last column. We're done.
+        f.write('\n')
+    else:
+        if (len1 - 1) % 5 == 1:
+            # Add an extra space so that the numbers don't run together:
+            f.write(' ')
+        f.write('%s%d\n' % (' ' * ((len1 - 1) % 5 - 1), len1 - 1,))
+
+    # Write a line of '|' marks under the numbers emitted above:
+    f.write('   ')
+    for i1 in range(0, len1, 5):
+        f.write('%5s' % ('|',))
+
+    if (len1 - 1) % 5 == 0:
+        # The last multiple-of-five integer was at the last
+        # column. We're done.
+        f.write('\n')
+    elif (len1 - 1) % 5 == 1:
+        # Tilt the tick mark to account for the extra space:
+        f.write(' /\n')
+    else:
+        f.write('%s|\n' % (' ' * ((len1 - 1) % 5 - 1),))
+
+    # Write the actual body of the diagram:
+    for i2 in range(len2):
+        if i2 % 5 == 0 or i2 == len2 - 1:
+            f.write('%4d - ' % (i2,))
+        else:
+            f.write('       ')
+
+        for i1 in range(len1):
+            f.write(diagram[i1][i2])
+
+        if tip1 and i2 == 0:
+            f.write(' - %s\n' % (tip1,))
+        else:
+            f.write('\n')
+
+    if tip2:
+        f.write('       |\n')
+        f.write('     %s\n' % (tip2,))
+
+
+class MergeFrontier(object):
+    """Represents the merge frontier within a Block.
+
+    A MergeFrontier is represented by a list of SubBlocks, each of
+    which is thought to be completely mergeable.  The list is kept in
+    normalized form:
+
+    * Only non-empty blocks are retained
+
+    * Blocks are sorted from bottom left to upper right
+
+    * No redundant blocks
+
+    """
+
+    @staticmethod
+    def map_known_frontier(block):
+        """Return the MergeFrontier describing existing successful merges in block.
+
+        The return value only includes the part that is fully outlined
+        and whose outline consists of rectangles reaching back to
+        (0,0).
+
+        A blocked commit is *not* considered to be within the
+        frontier, even if a merge is registered for it.  Such merges
+        must be explicitly unblocked."""
+
+        # FIXME: This algorithm can take combinatorial time, for
+        # example if there is a big block of merges that is a dead
+        # end:
+        #
+        #     +++++++
+        #     +?+++++
+        #     +?+++++
+        #     +?+++++
+        #     +?*++++
+        #
+        # The problem is that the algorithm will explore all of the
+        # ways of getting to commit *, and the number of paths grows
+        # like a binomial coefficient.  The solution would be to
+        # remember dead-ends and reject any curves that visit a point
+        # to the right of a dead-end.
+        #
+        # For now we don't intend to allow a situation like this to be
+        # created, so we ignore the problem.
+
+        # A list (i1, i2, down) of points in the path so far.  down is
+        # True iff the attempted step following this one was
+        # downwards.
+        path = []
+
+        def create_frontier(path):
+            blocks = []
+            for ((i1old, i2old, downold), (i1new, i2new, downnew)) in iter_neighbors(path):
+                if downold is True and downnew is False:
+                    blocks.append(block[:i1new + 1, :i2new + 1])
+            return MergeFrontier(block, blocks)
+
+        # Loop invariants:
+        #
+        # * path is a valid path
+        #
+        # * (i1, i2) is in block but it not yet added to path
+        #
+        # * down is True if a step downwards from (i1, i2) has not yet
+        #   been attempted
+        (i1, i2) = (block.len1 - 1, 0)
+        down = True
+        while True:
+            if down:
+                if i2 == block.len2 - 1:
+                    # Hit edge of block; can't move down:
+                    down = False
+                elif (i1, i2 + 1) in block and not block.is_blocked(i1, i2 + 1):
+                    # Can move down
+                    path.append((i1, i2, True))
+                    i2 += 1
+                else:
+                    # Can't move down.
+                    down = False
+            else:
+                if i1 == 0:
+                    # Success!
+                    path.append((i1, i2, False))
+                    return create_frontier(path)
+                elif (i1 - 1, i2) in block and not block.is_blocked(i1 - 1, i2):
+                    # Can move left
+                    path.append((i1, i2, False))
+                    down = True
+                    i1 -= 1
+                else:
+                    # There's no way to go forward; backtrack until we
+                    # find a place where we can still try going left:
+                    while True:
+                        try:
+                            (i1, i2, down) = path.pop()
+                        except IndexError:
+                            # This shouldn't happen because, in the
+                            # worst case, there is a valid path across
+                            # the top edge of the merge diagram.
+                            raise RuntimeError('Block is improperly formed!')
+                        if down:
+                            down = False
+                            break
+
+    @staticmethod
+    def compute_by_bisection(block):
+        """Return a MergeFrontier instance for block.
+
+        Compute the blocks making up the boundary using bisection. See
+        find_frontier_blocks() for more information.
+
+        """
+
+        return MergeFrontier(block, list(find_frontier_blocks(block)))
+
+    def __init__(self, block, blocks=None):
+        self.block = block
+        self.blocks = self._normalized_blocks(blocks or [])
+
+    def __iter__(self):
+        """Iterate over blocks from bottom left to upper right."""
+
+        return iter(self.blocks)
+
+    def __bool__(self):
+        """Return True iff this frontier has no completed parts."""
+
+        return bool(self.blocks)
+
+    def __nonzero__(self):
+        """Return True iff this frontier has no completed parts."""
+
+        return bool(self.blocks)
+
+    def is_complete(self):
+        """Return True iff the frontier covers the whole block."""
+
+        return (
+            len(self.blocks) == 1
+            and self.blocks[0].len1 == self.block.len1
+            and self.blocks[0].len2 == self.block.len2
+            )
+
+    # Additional codes used in the 2D array returned from create_diagram()
+    FRONTIER_WITHIN = 0x10
+    FRONTIER_RIGHT_EDGE = 0x20
+    FRONTIER_BOTTOM_EDGE = 0x40
+    FRONTIER_MASK = 0x70
+
+    @classmethod
+    def default_formatter(cls, node, legend=None):
+        def color(node, within):
+            if within:
+                return AnsiColor.B_GREEN + node + AnsiColor.END
+            else:
+                return AnsiColor.B_RED + node + AnsiColor.END
+
+        if legend is None:
+            legend = ['?', '*', '.', '#', '@', '-', '|', '+']
+        merge = node & Block.MERGE_MASK
+        within = merge == Block.MERGE_MANUAL or (node & cls.FRONTIER_WITHIN)
+        skip = [Block.MERGE_MANUAL, Block.MERGE_BLOCKED, Block.MERGE_UNBLOCKED]
+        if merge not in skip:
+            vertex = (cls.FRONTIER_BOTTOM_EDGE | cls.FRONTIER_RIGHT_EDGE)
+            edge_status = node & vertex
+            if edge_status == vertex:
+                return color(legend[-1], within)
+            elif edge_status == cls.FRONTIER_RIGHT_EDGE:
+                return color(legend[-2], within)
+            elif edge_status == cls.FRONTIER_BOTTOM_EDGE:
+                return color(legend[-3], within)
+        return color(legend[merge], within)
+
+    def create_diagram(self):
+        """Generate a diagram of this frontier.
+
+        The returned diagram is a nested list of integers forming a 2D array,
+        representing the merge frontier embedded in the diagram of commits
+        returned from Block.create_diagram().
+
+        At each node in the returned diagram is an integer whose value is a
+        bitwise-or of existing MERGE_* constant from Block.create_diagram()
+        and zero or more of the FRONTIER_* constants defined in this class."""
+
+        diagram = self.block.create_diagram()
+
+        try:
+            next_block = self.blocks[0]
+        except IndexError:
+            next_block = None
+
+        diagram[0][-1] |= self.FRONTIER_BOTTOM_EDGE
+        for i2 in range(1, self.block.len2):
+            if next_block is None or i2 >= next_block.len2:
+                diagram[0][i2] |= self.FRONTIER_RIGHT_EDGE
+
+        prev_block = None
+        for n in range(len(self.blocks)):
+            block = self.blocks[n]
+            try:
+                next_block = self.blocks[n + 1]
+            except IndexError:
+                next_block = None
+
+            for i1 in range(block.len1):
+                for i2 in range(block.len2):
+                    v = self.FRONTIER_WITHIN
+                    if i1 == block.len1 - 1 and (
+                            next_block is None or i2 >= next_block.len2
+                            ):
+                        v |= self.FRONTIER_RIGHT_EDGE
+                    if i2 == block.len2 - 1 and (
+                            prev_block is None or i1 >= prev_block.len1
+                            ):
+                        v |= self.FRONTIER_BOTTOM_EDGE
+                    diagram[i1][i2] |= v
+            prev_block = block
+
+        try:
+            prev_block = self.blocks[-1]
+        except IndexError:
+            prev_block = None
+
+        for i1 in range(1, self.block.len1):
+            if prev_block is None or i1 >= prev_block.len1:
+                diagram[i1][0] |= self.FRONTIER_BOTTOM_EDGE
+        diagram[-1][0] |= self.FRONTIER_RIGHT_EDGE
+
+        return diagram
+
+    def format_diagram(self, formatter=None, diagram=None):
+        if formatter is None:
+            formatter = self.default_formatter
+        if diagram is None:
+            diagram = self.create_diagram()
+        return [
+            [formatter(diagram[i1][i2]) for i2 in range(self.block.len2)]
+            for i1 in range(self.block.len1)]
+
+    def write(self, f, tip1=None, tip2=None):
+        """Write this frontier to file-like object f."""
+
+        write_diagram_with_axes(f, self.format_diagram(), tip1, tip2)
+
+    def write_html(self, f, name, cssfile='imerge.css', abbrev_sha1=7):
+        class_map = {
+            Block.MERGE_UNKNOWN: 'merge_unknown',
+            Block.MERGE_MANUAL: 'merge_manual',
+            Block.MERGE_AUTOMATIC: 'merge_automatic',
+            Block.MERGE_BLOCKED: 'merge_blocked',
+            Block.MERGE_UNBLOCKED: 'merge_unblocked',
+            self.FRONTIER_WITHIN: 'frontier_within',
+            self.FRONTIER_RIGHT_EDGE: 'frontier_right_edge',
+            self.FRONTIER_BOTTOM_EDGE: 'frontier_bottom_edge',
+            }
+
+        def map_to_classes(i1, i2, node):
+            merge = node & Block.MERGE_MASK
+            ret = [class_map[merge]]
+            for bit in [self.FRONTIER_WITHIN, self.FRONTIER_RIGHT_EDGE,
+                        self.FRONTIER_BOTTOM_EDGE]:
+                if node & bit:
+                    ret.append(class_map[bit])
+            if not (node & self.FRONTIER_WITHIN):
+                ret.append('frontier_without')
+            elif (node & Block.MERGE_MASK) == Block.MERGE_UNKNOWN:
+                ret.append('merge_skipped')
+            if i1 == 0 or i2 == 0:
+                ret.append('merge_initial')
+            if i1 == 0:
+                ret.append('col_left')
+            if i1 == self.block.len1 - 1:
+                ret.append('col_right')
+            if i2 == 0:
+                ret.append('row_top')
+            if i2 == self.block.len2 - 1:
+                ret.append('row_bottom')
+            return ret
+
+        f.write("""\
+<html>
+<head>
+<title>git-imerge: %s</title>
+<link rel="stylesheet" href="%s" type="text/css" />
+</head>
+<body>
+<table id="imerge">
+""" % (name, cssfile))
+
+        diagram = self.create_diagram()
+
+        f.write('  <tr>\n')
+        f.write('    <th class="indexes">&nbsp;</td>\n')
+        for i1 in range(self.block.len1):
+            f.write('    <th class="indexes">%d-*</td>\n' % (i1,))
+        f.write('  </tr>\n')
+
+        for i2 in range(self.block.len2):
+            f.write('  <tr>\n')
+            f.write('    <th class="indexes">*-%d</td>\n' % (i2,))
+            for i1 in range(self.block.len1):
+                classes = map_to_classes(i1, i2, diagram[i1][i2])
+                record = self.block.get_value(i1, i2)
+                sha1 = record.sha1 or ''
+                td_id = record.sha1 and ' id="%s"' % (record.sha1) or ''
+                td_class = classes and ' class="' + ' '.join(classes) + '"' or ''
+                f.write('    <td%s%s>%.*s</td>\n' % (
+                        td_id, td_class, abbrev_sha1, sha1))
+            f.write('  </tr>\n')
+        f.write('</table>\n</body>\n</html>\n')
+
+    @staticmethod
+    def _normalized_blocks(blocks):
+        """Return a normalized list of blocks from the argument.
+
+        * Remove empty blocks.
+
+        * Remove redundant blocks.
+
+        * Sort the blocks according to their len1 members.
+
+        """
+
+        def contains(block1, block2):
+            """Return true if block1 contains block2."""
+
+            return block1.len1 >= block2.len1 and block1.len2 >= block2.len2
+
+        blocks = sorted(blocks, key=lambda block: block.len1)
+        ret = []
+
+        for block in blocks:
+            if block.len1 == 0 or block.len2 == 0:
+                continue
+            while True:
+                if not ret:
+                    ret.append(block)
+                    break
+
+                last = ret[-1]
+                if contains(last, block):
+                    break
+                elif contains(block, last):
+                    ret.pop()
+                else:
+                    ret.append(block)
+                    break
+
+        return ret
+
+    def remove_failure(self, i1, i2):
+        """Refine the merge frontier given that the specified merge fails."""
+
+        newblocks = []
+        shrunk_block = False
+
+        for block in self.blocks:
+            if i1 < block.len1 and i2 < block.len2:
+                if i1 > 1:
+                    newblocks.append(block[:i1, :])
+                if i2 > 1:
+                    newblocks.append(block[:, :i2])
+                shrunk_block = True
+            else:
+                newblocks.append(block)
+
+        if shrunk_block:
+            self.blocks = self._normalized_blocks(newblocks)
+
+    def partition(self, block):
+        """Return two MergeFrontier instances partitioned by block.
+
+        Return (frontier1, frontier2), where each frontier is limited
+        to each side of the argument.
+
+        block must be contained in this MergeFrontier and already be
+        outlined."""
+
+        # Remember that the new blocks have to include the outlined
+        # edge of the partitioning block to satisfy the invariant that
+        # the left and upper edge of a block has to be known.
+
+        left = []
+        right = []
+        for b in self.blocks:
+            if b.len1 == block.len1 and b.len2 == block.len2:
+                # That's the block we're partitioning on; just skip it.
+                pass
+            elif b.len1 < block.len1 and b.len2 > block.len2:
+                left.append(b[:, block.len2 - 1:])
+            elif b.len1 > block.len1 and b.len2 < block.len2:
+                right.append(b[block.len1 - 1:, :])
+            else:
+                raise ValueError(
+                    'MergeFrontier partitioned with inappropriate block'
+                    )
+        return (
+            MergeFrontier(self.block[:block.len1, block.len2 - 1:], left),
+            MergeFrontier(self.block[block.len1 - 1:, :block.len2], right),
+            )
+
+    def iter_blocker_blocks(self):
+        """Iterate over the blocks on the far side of this frontier.
+
+        This must only be called for an outlined frontier."""
+
+        if not self:
+            yield self.block
+            return
+
+        blockruns = []
+        if self.blocks[0].len2 < self.block.len2:
+            blockruns.append([self.block[0, :]])
+        blockruns.append(self)
+        if self.blocks[-1].len1 < self.block.len1:
+            blockruns.append([self.block[:, 0]])
+
+        for block1, block2 in iter_neighbors(itertools.chain(*blockruns)):
+            yield self.block[block1.len1 - 1:block2.len1, block2.len2 - 1: block1.len2]
+
+    def get_affected_blocker_block(self, i1, i2):
+        """Return the blocker block that a successful merge (i1,i2) would unblock.
+
+        If there is no such block, raise NotABlockingCommitError."""
+
+        for block in self.iter_blocker_blocks():
+            try:
+                (block_i1, block_i2) = block.convert_original_indexes(i1, i2)
+            except IndexError:
+                pass
+            else:
+                if (block_i1, block_i2) == (1, 1):
+                    # That's the one we need to improve this block:
+                    return block
+                else:
+                    # An index pair can only be in a single blocker
+                    # block, which we've already found:
+                    raise NotABlockingCommitError(
+                        'Commit %d-%d was not blocking the frontier.'
+                        % self.block.get_original_indexes(i1, i2)
+                        )
+        else:
+            raise NotABlockingCommitError(
+                'Commit %d-%d was not on the frontier.'
+                % self.block.get_original_indexes(i1, i2)
+                )
+
+    def auto_expand(self):
+        """Try pushing out one of the blocks on this frontier.
+
+        Raise BlockCompleteError if the whole block has already been
+        solved.  Raise FrontierBlockedError if the frontier is blocked
+        everywhere.  This method does *not* update self; if it returns
+        successfully you should recompute the frontier from
+        scratch."""
+
+        blocks = list(self.iter_blocker_blocks())
+        if not blocks:
+            raise BlockCompleteError('The block is already complete')
+
+        # Try blocks from left to right:
+        blocks.sort(key=lambda block: block.get_original_indexes(0, 0))
+
+        for block in blocks:
+            if block.auto_expand_frontier():
+                return
+        else:
+            # None of the blocks could be expanded.  Suggest that the
+            # caller do a manual merge of the commit that is blocking
+            # the leftmost blocker block.
+            i1, i2 = blocks[0].get_original_indexes(1, 1)
+            raise FrontierBlockedError(
+                'Conflict; suggest manual merge of %d-%d' % (i1, i2),
+                i1, i2
+                )
+
+
+class NoManualMergeError(Exception):
+    pass
+
+
+class ManualMergeUnusableError(Exception):
+    def __init__(self, msg, commit):
+        Exception.__init__(self, 'Commit %s is not usable; %s' % (commit, msg))
+        self.commit = commit
+
+
+class CommitNotFoundError(Exception):
+    def __init__(self, commit):
+        Exception.__init__(
+            self,
+            'Commit %s was not found among the known merge commits' % (commit,),
+            )
+        self.commit = commit
+
+
+class Block(object):
+    """A rectangular range of commits, indexed by (i1,i2).
+
+    The commits block[0,1:] and block[1:,0] are always all known.
+    block[0,0] may or may not be known; it is usually unneeded (except
+    maybe implicitly).
+
+    Members:
+
+        name -- the name of the imerge of which this block is part.
+
+        len1, len2 -- the dimensions of the block.
+
+    """
+
+    def __init__(self, git, name, len1, len2):
+        self.git = git
+        self.name = name
+        self.len1 = len1
+        self.len2 = len2
+
+    def get_merge_state(self):
+        """Return the MergeState instance containing this Block."""
+
+        raise NotImplementedError()
+
+    def get_area(self):
+        """Return the area of this block, ignoring the known edges."""
+
+        return (self.len1 - 1) * (self.len2 - 1)
+
+    def _check_indexes(self, i1, i2):
+        if not (0 <= i1 < self.len1):
+            raise IndexError('first index (%s) is out of range 0:%d' % (i1, self.len1,))
+        if not (0 <= i2 < self.len2):
+            raise IndexError('second index (%s) is out of range 0:%d' % (i2, self.len2,))
+
+    def _normalize_indexes(self, index):
+        """Return a pair of non-negative integers (i1, i2)."""
+
+        try:
+            (i1, i2) = index
+        except TypeError:
+            raise IndexError('Block indexing requires exactly two indexes')
+
+        if i1 < 0:
+            i1 += self.len1
+        if i2 < 0:
+            i2 += self.len2
+
+        self._check_indexes(i1, i2)
+        return (i1, i2)
+
+    def get_original_indexes(self, i1, i2):
+        """Return the original indexes corresponding to (i1,i2) in this block.
+
+        This function supports negative indexes."""
+
+        return self._normalize_indexes((i1, i2))
+
+    def convert_original_indexes(self, i1, i2):
+        """Return the indexes in this block corresponding to original indexes (i1,i2).
+
+        raise IndexError if they are not within this block.  This
+        method does not support negative indices."""
+
+        return (i1, i2)
+
+    def _set_value(self, i1, i2, value):
+        """Set the MergeRecord for integer indexes (i1, i2).
+
+        i1 and i2 must be non-negative."""
+
+        raise NotImplementedError()
+
+    def get_value(self, i1, i2):
+        """Return the MergeRecord for integer indexes (i1, i2).
+
+        i1 and i2 must be non-negative."""
+
+        raise NotImplementedError()
+
+    def __getitem__(self, index):
+        """Return the MergeRecord at (i1, i2) (requires two indexes).
+
+        If i1 and i2 are integers but the merge is unknown, return
+        None.  If either index is a slice, return a SubBlock."""
+
+        try:
+            (i1, i2) = index
+        except TypeError:
+            raise IndexError('Block indexing requires exactly two indexes')
+        if isinstance(i1, slice) or isinstance(i2, slice):
+            return SubBlock(self, i1, i2)
+        else:
+            return self.get_value(*self._normalize_indexes((i1, i2)))
+
+    def __contains__(self, index):
+        return self[index].is_known()
+
+    def is_blocked(self, i1, i2):
+        """Return True iff the specified commit is blocked."""
+
+        (i1, i2) = self._normalize_indexes((i1, i2))
+        return self[i1, i2].is_blocked()
+
+    def is_mergeable(self, i1, i2):
+        """Determine whether (i1,i2) can be merged automatically.
+
+        If we already have a merge record for (i1,i2), return True.
+        Otherwise, attempt a merge (discarding the result)."""
+
+        (i1, i2) = self._normalize_indexes((i1, i2))
+        if (i1, i2) in self:
+            return True
+        else:
+            sys.stderr.write(
+                'Attempting automerge of %d-%d...' % self.get_original_indexes(i1, i2)
+                )
+            try:
+                self.git.automerge(self[i1, 0].sha1, self[0, i2].sha1)
+                sys.stderr.write('success.\n')
+                return True
+            except AutomaticMergeFailed:
+                sys.stderr.write('failure.\n')
+                return False
+
+    def auto_outline(self):
+        """Complete the outline of this Block.
+
+        raise UnexpectedMergeFailure if automerging fails."""
+
+        # Check that all of the merges go through before recording any
+        # of them permanently.
+        merges = []
+
+        def do_merge(i1, commit1, i2, commit2, msg='Autofilling %d-%d...', record=True):
+            if (i1, i2) in self:
+                return self[i1, i2].sha1
+            (i1orig, i2orig) = self.get_original_indexes(i1, i2)
+            sys.stderr.write(msg % (i1orig, i2orig))
+            logmsg = 'imerge \'%s\': automatic merge %d-%d' % (self.name, i1orig, i2orig)
+            try:
+                merge = self.git.automerge(commit1, commit2, msg=logmsg)
+                sys.stderr.write('success.\n')
+            except AutomaticMergeFailed as e:
+                sys.stderr.write('unexpected conflict.  Backtracking...\n')
+                raise UnexpectedMergeFailure(str(e), i1, i2)
+            if record:
+                merges.append((i1, i2, merge))
+            return merge
+
+        i2 = self.len2 - 1
+        left = self[0, i2].sha1
+        for i1 in range(1, self.len1 - 1):
+            left = do_merge(i1, self[i1, 0].sha1, i2, left)
+
+        i1 = self.len1 - 1
+        above = self[i1, 0].sha1
+        for i2 in range(1, self.len2 - 1):
+            above = do_merge(i1, above, i2, self[0, i2].sha1)
+
+        i1, i2 = self.len1 - 1, self.len2 - 1
+        if i1 > 1 and i2 > 1:
+            # We will compare two ways of doing the final "vertex" merge:
+            # as a continuation of the bottom edge, or as a continuation
+            # of the right edge.  We only accept it if both approaches
+            # succeed and give identical trees.
+            vertex_v1 = do_merge(
+                i1, self[i1, 0].sha1, i2, left,
+                msg='Autofilling %d-%d (first way)...',
+                record=False,
+                )
+            vertex_v2 = do_merge(
+                i1, above, i2, self[0, i2].sha1,
+                msg='Autofilling %d-%d (second way)...',
+                record=False,
+                )
+            if self.git.get_tree(vertex_v1) == self.git.get_tree(vertex_v2):
+                sys.stderr.write(
+                    'The two ways of autofilling %d-%d agree.\n'
+                    % self.get_original_indexes(i1, i2)
+                    )
+                # Everything is OK.  Now reparent the actual vertex merge to
+                # have above and left as its parents:
+                merges.append(
+                    (i1, i2, self.git.reparent(vertex_v1, [above, left]))
+                    )
+            else:
+                sys.stderr.write(
+                    'The two ways of autofilling %d-%d do not agree.  Backtracking...\n'
+                    % self.get_original_indexes(i1, i2)
+                    )
+                raise UnexpectedMergeFailure('Inconsistent vertex merges', i1, i2)
+        else:
+            do_merge(
+                i1, above, i2, left,
+                msg='Autofilling %d-%d...',
+                )
+
+        # Done!  Now we can record the results:
+        sys.stderr.write('Recording autofilled block %s.\n' % (self,))
+        for (i1, i2, merge) in merges:
+            self[i1, i2].record_merge(merge, MergeRecord.NEW_AUTO)
+
+    def auto_fill_micromerge(self):
+        """Try to fill the very first micromerge in this block.
+
+        Return True iff the attempt was successful."""
+
+        assert (1, 1) not in self
+        if self.len1 <= 1 or self.len2 <= 1 or self.is_blocked(1, 1):
+            return False
+
+        i1, i2 = 1, 1
+        (i1orig, i2orig) = self.get_original_indexes(i1, i2)
+        sys.stderr.write('Attempting to merge %d-%d...' % (i1orig, i2orig))
+        logmsg = 'imerge \'%s\': automatic merge %d-%d' % (self.name, i1orig, i2orig)
+        try:
+            merge = self.git.automerge(
+                self[i1, i2 - 1].sha1,
+                self[i1 - 1, i2].sha1,
+                msg=logmsg,
+                )
+            sys.stderr.write('success.\n')
+        except AutomaticMergeFailed:
+            sys.stderr.write('conflict.\n')
+            self[i1, i2].record_blocked(True)
+            return False
+        else:
+            self[i1, i2].record_merge(merge, MergeRecord.NEW_AUTO)
+            return True
+
+    def auto_outline_frontier(self, merge_frontier=None):
+        """Try to outline the merge frontier of this block.
+
+        Return True iff some progress was made."""
+
+        if merge_frontier is None:
+            merge_frontier = MergeFrontier.compute_by_bisection(self)
+
+        if not merge_frontier:
+            # Nothing to do.
+            return False
+
+        best_block = max(merge_frontier, key=lambda block: block.get_original_indexes(0, 0))
+
+        try:
+            best_block.auto_outline()
+        except UnexpectedMergeFailure as e:
+            # One of the merges that we expected to succeed in
+            # fact failed.
+            merge_frontier.remove_failure(e.i1, e.i2)
+
+            if (e.i1, e.i2) == (1, 1):
+                # The failed merge was the first micromerge that we'd
+                # need for `best_block`, so record it as a blocker:
+                best_block[e.i1, e.i2].record_blocked(True)
+
+            return self.auto_outline_frontier(merge_frontier)
+        else:
+            f1, f2 = merge_frontier.partition(best_block)
+            if f1:
+                f1.block.auto_outline_frontier(f1)
+            if f2:
+                f2.block.auto_outline_frontier(f2)
+            return True
+
+    def auto_expand_frontier(self):
+        merge_state = self.get_merge_state()
+        if merge_state.manual:
+            return False
+        elif merge_state.goal == 'full':
+            return self.auto_fill_micromerge()
+        else:
+            return self.auto_outline_frontier()
+
+    # The codes in the 2D array returned from create_diagram()
+    MERGE_UNKNOWN = 0
+    MERGE_MANUAL = 1
+    MERGE_AUTOMATIC = 2
+    MERGE_BLOCKED = 3
+    MERGE_UNBLOCKED = 4
+    MERGE_MASK = 7
+
+    # A map {(is_known(), manual, is_blocked()) : integer constant}
+    MergeState = {
+        (False, False, False): MERGE_UNKNOWN,
+        (False, False, True): MERGE_BLOCKED,
+        (True, False, True): MERGE_UNBLOCKED,
+        (True, True, True): MERGE_UNBLOCKED,
+        (True, False, False): MERGE_AUTOMATIC,
+        (True, True, False): MERGE_MANUAL,
+        }
+
+    def create_diagram(self):
+        """Generate a diagram of this Block.
+
+        The returned diagram, is a nested list of integers forming a 2D array,
+        where the integer at diagram[i1][i2] is one of MERGE_UNKNOWN,
+        MERGE_MANUAL, MERGE_AUTOMATIC, MERGE_BLOCKED, or MERGE_UNBLOCKED,
+        representing the state of the commit at (i1, i2)."""
+
+        diagram = [[None for i2 in range(self.len2)] for i1 in range(self.len1)]
+
+        for i2 in range(self.len2):
+            for i1 in range(self.len1):
+                rec = self.get_value(i1, i2)
+                c = self.MergeState[
+                    rec.is_known(), rec.is_manual(), rec.is_blocked()]
+                diagram[i1][i2] = c
+
+        return diagram
+
+    def format_diagram(self, legend=None, diagram=None):
+        if legend is None:
+            legend = [
+                AnsiColor.D_GRAY + '?' + AnsiColor.END,
+                AnsiColor.B_GREEN + '*' + AnsiColor.END,
+                AnsiColor.B_GREEN + '.' + AnsiColor.END,
+                AnsiColor.B_RED + '#' + AnsiColor.END,
+                AnsiColor.B_YELLOW + '@' + AnsiColor.END,
+                ]
+        if diagram is None:
+            diagram = self.create_diagram()
+        return [
+            [legend[diagram[i1][i2]] for i2 in range(self.len2)]
+            for i1 in range(self.len1)]
+
+    def write(self, f, tip1='', tip2=''):
+        write_diagram_with_axes(f, self.format_diagram(), tip1, tip2)
+
+    def writeppm(self, f):
+        legend = ['127 127 0', '0 255 0', '0 127 0', '255 0 0', '127 0 0']
+        diagram = self.format_diagram(legend)
+
+        f.write('P3\n')
+        f.write('%d %d 255\n' % (self.len1, self.len2,))
+        for i2 in range(self.len2):
+            f.write('  '.join(diagram[i1][i2] for i1 in range(self.len1)) + '\n')
+
+
+class SubBlock(Block):
+    @staticmethod
+    def _convert_to_slice(i, len):
+        """Return (start, len) for the specified index.
+
+        i may be an integer or a slice with step equal to 1."""
+
+        if isinstance(i, int):
+            if i < 0:
+                i += len
+            i = slice(i, i + 1)
+        elif isinstance(i, slice):
+            if i.step is not None and i.step != 1:
+                raise ValueError('Index has a non-zero step size')
+        else:
+            raise ValueError('Index cannot be converted to a slice')
+
+        (start, stop, step) = i.indices(len)
+        return (start, stop - start)
+
+    def __init__(self, block, slice1, slice2):
+        (start1, len1) = self._convert_to_slice(slice1, block.len1)
+        (start2, len2) = self._convert_to_slice(slice2, block.len2)
+        Block.__init__(self, block.git, block.name, len1, len2)
+        if isinstance(block, SubBlock):
+            # Peel away one level of indirection:
+            self._merge_state = block._merge_state
+            self._start1 = start1 + block._start1
+            self._start2 = start2 + block._start2
+        else:
+            assert(isinstance(block, MergeState))
+            self._merge_state = block
+            self._start1 = start1
+            self._start2 = start2
+
+    def get_merge_state(self):
+        return self._merge_state
+
+    def get_original_indexes(self, i1, i2):
+        i1, i2 = self._normalize_indexes((i1, i2))
+        return self._merge_state.get_original_indexes(
+            i1 + self._start1,
+            i2 + self._start2,
+            )
+
+    def convert_original_indexes(self, i1, i2):
+        (i1, i2) = self._merge_state.convert_original_indexes(i1, i2)
+        if not (
+                self._start1 <= i1 < self._start1 + self.len1
+                and self._start2 <= i2 < self._start2 + self.len2
+                ):
+            raise IndexError('Indexes are not within block')
+        return (i1 - self._start1, i2 - self._start2)
+
+    def _set_value(self, i1, i2, sha1, flags):
+        self._check_indexes(i1, i2)
+        self._merge_state._set_value(
+            i1 + self._start1,
+            i2 + self._start2,
+            sha1, flags,
+            )
+
+    def get_value(self, i1, i2):
+        self._check_indexes(i1, i2)
+        return self._merge_state.get_value(i1 + self._start1, i2 + self._start2)
+
+    def __str__(self):
+        return '%s[%d:%d,%d:%d]' % (
+            self._merge_state,
+            self._start1, self._start1 + self.len1,
+            self._start2, self._start2 + self.len2,
+            )
+
+
+class MissingMergeFailure(Failure):
+    def __init__(self, i1, i2):
+        Failure.__init__(self, 'Merge %d-%d is not yet done' % (i1, i2))
+        self.i1 = i1
+        self.i2 = i2
+
+
+class MergeState(Block):
+    SOURCE_TABLE = {
+        'auto': MergeRecord.SAVED_AUTO,
+        'manual': MergeRecord.SAVED_MANUAL,
+        }
+
+    @staticmethod
+    def get_scratch_refname(name):
+        return 'refs/heads/imerge/%s' % (name,)
+
+    @staticmethod
+    def _check_no_merges(git, commits):
+        multiparent_commits = [
+            commit
+            for commit in commits
+            if len(git.get_commit_parents(commit)) > 1
+            ]
+        if multiparent_commits:
+            raise Failure(
+                'The following commits on the to-be-rebased branch are merge commits:\n'
+                '    %s\n'
+                '--goal=\'rebase\' is not yet supported for branches that include merges.\n'
+                % ('\n    '.join(multiparent_commits),)
+                )
+
+    @staticmethod
+    def initialize(
+            git, name, merge_base,
+            tip1, commits1,
+            tip2, commits2,
+            goal=DEFAULT_GOAL, goalopts=None,
+            manual=False, branch=None,
+            ):
+        """Create and return a new MergeState object."""
+
+        git.verify_imerge_name_available(name)
+        if branch:
+            git.check_branch_name_format(branch)
+        else:
+            branch = name
+
+        if goal == 'rebase':
+            MergeState._check_no_merges(git, commits2)
+
+        return MergeState(
+            git, name, merge_base,
+            tip1, commits1,
+            tip2, commits2,
+            MergeRecord.NEW_MANUAL,
+            goal=goal, goalopts=goalopts,
+            manual=manual,
+            branch=branch,
+            )
+
+    @staticmethod
+    def read(git, name):
+        (state, merges) = git.read_imerge_state(name)
+
+        # Translate sources from strings into MergeRecord constants
+        # SAVED_AUTO or SAVED_MANUAL:
+        merges = dict((
+            ((i1, i2), (sha1, MergeState.SOURCE_TABLE[source]))
+            for ((i1, i2), (sha1, source)) in merges.items()
+            ))
+
+        blockers = state.get('blockers', [])
+
+        # Find merge_base, commits1, and commits2:
+        (merge_base, source) = merges.pop((0, 0))
+        if source != MergeRecord.SAVED_MANUAL:
+            raise Failure('Merge base should be manual!')
+        commits1 = []
+        for i1 in itertools.count(1):
+            try:
+                (sha1, source) = merges.pop((i1, 0))
+                if source != MergeRecord.SAVED_MANUAL:
+                    raise Failure('Merge %d-0 should be manual!' % (i1,))
+                commits1.append(sha1)
+            except KeyError:
+                break
+
+        commits2 = []
+        for i2 in itertools.count(1):
+            try:
+                (sha1, source) = merges.pop((0, i2))
+                if source != MergeRecord.SAVED_MANUAL:
+                    raise Failure('Merge (0,%d) should be manual!' % (i2,))
+                commits2.append(sha1)
+            except KeyError:
+                break
+
+        tip1 = state.get('tip1', commits1[-1])
+        tip2 = state.get('tip2', commits2[-1])
+
+        goal = state['goal']
+        if goal not in ALLOWED_GOALS:
+            raise Failure('Goal %r, read from state, is not recognized.' % (goal,))
+
+        goalopts = state['goalopts']
+
+        manual = state['manual']
+        branch = state.get('branch', name)
+
+        state = MergeState(
+            git, name, merge_base,
+            tip1, commits1,
+            tip2, commits2,
+            MergeRecord.SAVED_MANUAL,
+            goal=goal, goalopts=goalopts,
+            manual=manual,
+            branch=branch,
+            )
+
+        # Now write the rest of the merges to state:
+        for ((i1, i2), (sha1, source)) in merges.items():
+            if i1 == 0 and i2 >= state.len2:
+                raise Failure('Merge 0-%d is missing!' % (state.len2,))
+            if i1 >= state.len1 and i2 == 0:
+                raise Failure('Merge %d-0 is missing!' % (state.len1,))
+            if i1 >= state.len1 or i2 >= state.len2:
+                raise Failure(
+                    'Merge %d-%d is out of range [0:%d,0:%d]'
+                    % (i1, i2, state.len1, state.len2)
+                    )
+            state[i1, i2].record_merge(sha1, source)
+
+        # Record any blockers:
+        for (i1, i2) in blockers:
+            state[i1, i2].record_blocked(True)
+
+        return state
+
+    @staticmethod
+    def remove(git, name):
+        # If HEAD is the scratch refname, abort any in-progress
+        # commits and detach HEAD:
+        scratch_refname = MergeState.get_scratch_refname(name)
+        if git.get_head_refname() == scratch_refname:
+            try:
+                git.abort_merge()
+            except CalledProcessError:
+                pass
+            # Detach head so that we can delete scratch_refname:
+            git.detach('Detach HEAD from %s' % (scratch_refname,))
+
+        # Delete the scratch refname:
+        git.delete_ref(
+            scratch_refname, 'imerge %s: remove scratch reference' % (name,),
+            )
+
+        # Remove any references referring to intermediate merges:
+        git.delete_imerge_refs(name)
+
+        # If this merge was the default, unset the default:
+        if git.get_default_imerge_name() == name:
+            git.set_default_imerge_name(None)
+
+    def __init__(
+            self, git, name, merge_base,
+            tip1, commits1,
+            tip2, commits2,
+            source,
+            goal=DEFAULT_GOAL, goalopts=None,
+            manual=False,
+            branch=None,
+            ):
+        Block.__init__(self, git, name, len(commits1) + 1, len(commits2) + 1)
+        self.tip1 = tip1
+        self.tip2 = tip2
+        self.goal = goal
+        self.goalopts = goalopts
+        self.manual = bool(manual)
+        self.branch = branch or name
+
+        # A simulated 2D array.  Values are None or MergeRecord instances.
+        self._data = [[None] * self.len2 for i1 in range(self.len1)]
+
+        self.get_value(0, 0).record_merge(merge_base, source)
+        for (i1, commit) in enumerate(commits1, 1):
+            self.get_value(i1, 0).record_merge(commit, source)
+        for (i2, commit) in enumerate(commits2, 1):
+            self.get_value(0, i2).record_merge(commit, source)
+
+    def get_merge_state(self):
+        return self
+
+    def set_goal(self, goal):
+        if goal not in ALLOWED_GOALS:
+            raise ValueError('%r is not an allowed goal' % (goal,))
+
+        if goal == 'rebase':
+            self._check_no_merges(
+                self.git,
+                [self[0, i2].sha1 for i2 in range(1, self.len2)],
+                )
+
+        self.goal = goal
+
+    def _set_value(self, i1, i2, value):
+        self._data[i1][i2] = value
+
+    def get_value(self, i1, i2):
+        value = self._data[i1][i2]
+        # Missing values spring to life on first access:
+        if value is None:
+            value = MergeRecord()
+            self._data[i1][i2] = value
+        return value
+
+    def __contains__(self, index):
+        # Avoid creating new MergeRecord objects here.
+        (i1, i2) = self._normalize_indexes(index)
+        value = self._data[i1][i2]
+        return (value is not None) and value.is_known()
+
+    def auto_complete_frontier(self):
+        """Complete the frontier using automerges.
+
+        If progress is blocked before the frontier is complete, raise
+        a FrontierBlockedError.  Save the state as progress is
+        made."""
+
+        progress_made = False
+        try:
+            while True:
+                frontier = MergeFrontier.map_known_frontier(self)
+                frontier.auto_expand()
+                self.save()
+                progress_made = True
+        except BlockCompleteError:
+            return
+        except FrontierBlockedError as e:
+            self.save()
+            if not progress_made:
+                # Adjust the error message:
+                raise FrontierBlockedError(
+                    'No progress was possible; suggest manual merge of %d-%d'
+                    % (e.i1, e.i2),
+                    e.i1, e.i2,
+                    )
+            else:
+                raise
+
+    def find_index(self, commit):
+        """Return (i1,i2) for the specified commit.
+
+        Raise CommitNotFoundError if it is not known."""
+
+        for i2 in range(0, self.len2):
+            for i1 in range(0, self.len1):
+                if (i1, i2) in self:
+                    record = self[i1, i2]
+                    if record.sha1 == commit:
+                        return (i1, i2)
+        raise CommitNotFoundError(commit)
+
+    def request_user_merge(self, i1, i2):
+        """Prepare the working tree for the user to do a manual merge.
+
+        It is assumed that the merges above and to the left of (i1, i2)
+        are already done."""
+
+        above = self[i1, i2 - 1]
+        left = self[i1 - 1, i2]
+        if not above.is_known() or not left.is_known():
+            raise RuntimeError('The parents of merge %d-%d are not ready' % (i1, i2))
+        refname = MergeState.get_scratch_refname(self.name)
+        self.git.update_ref(
+            refname, above.sha1,
+            'imerge %r: Prepare merge %d-%d' % (self.name, i1, i2,),
+            )
+        self.git.checkout(refname)
+        logmsg = 'imerge \'%s\': manual merge %d-%d' % (self.name, i1, i2)
+        try:
+            self.git.manualmerge(left.sha1, logmsg)
+        except CalledProcessError:
+            # We expect an error (otherwise we would have automerged!)
+            pass
+        sys.stderr.write(
+            '\n'
+            'Original first commit:\n'
+            )
+        self.git.summarize_commit(self[i1, 0].sha1)
+        sys.stderr.write(
+            '\n'
+            'Original second commit:\n'
+            )
+        self.git.summarize_commit(self[0, i2].sha1)
+        sys.stderr.write(
+            '\n'
+            'There was a conflict merging commit %d-%d, shown above.\n'
+            'Please resolve the conflict, commit the result, then type\n'
+            '\n'
+            '    git-imerge continue\n'
+            % (i1, i2)
+            )
+
+    def incorporate_manual_merge(self, commit):
+        """Record commit as a manual merge of its parents.
+
+        Return the indexes (i1,i2) where it was recorded.  If the
+        commit is not usable for some reason, raise
+        ManualMergeUnusableError."""
+
+        parents = self.git.get_commit_parents(commit)
+        if len(parents) < 2:
+            raise ManualMergeUnusableError('it is not a merge', commit)
+        if len(parents) > 2:
+            raise ManualMergeUnusableError('it is an octopus merge', commit)
+        # Find the parents among our contents...
+        try:
+            (i1first, i2first) = self.find_index(parents[0])
+            (i1second, i2second) = self.find_index(parents[1])
+        except CommitNotFoundError:
+            raise ManualMergeUnusableError(
+                'its parents are not known merge commits', commit,
+                )
+        swapped = False
+        if i1first < i1second:
+            # Swap parents to make the parent from above the first parent:
+            (i1first, i2first, i1second, i2second) = (i1second, i2second, i1first, i2first)
+            swapped = True
+        if i1first != i1second + 1 or i2first != i2second - 1:
+            raise ManualMergeUnusableError(
+                'it is not a pairwise merge of adjacent parents', commit,
+                )
+        if swapped:
+            # Create a new merge with the parents in the conventional order:
+            commit = self.git.reparent(commit, [parents[1], parents[0]])
+
+        i1, i2 = i1first, i2second
+        self[i1, i2].record_merge(commit, MergeRecord.NEW_MANUAL)
+        return (i1, i2)
+
+    def incorporate_user_merge(self, edit_log_msg=None):
+        """If the user has done a merge for us, incorporate the results.
+
+        If the scratch reference refs/heads/imerge/NAME exists and is
+        checked out, first check if there are staged changes that can
+        be committed. Then try to incorporate the current commit into
+        this MergeState, delete the reference, and return (i1,i2)
+        corresponding to the merge. If the scratch reference does not
+        exist, raise NoManualMergeError(). If the scratch reference
+        exists but cannot be used, raise a ManualMergeUnusableError.
+        If there are unstaged changes in the working tree, emit an
+        error message and raise UncleanWorkTreeError.
+
+        """
+
+        refname = MergeState.get_scratch_refname(self.name)
+
+        try:
+            commit = self.git.get_commit_sha1(refname)
+        except ValueError:
+            raise NoManualMergeError('Reference %s does not exist.' % (refname,))
+
+        head_name = self.git.get_head_refname()
+        if head_name is None:
+            raise NoManualMergeError('HEAD is currently detached.')
+        elif head_name != refname:
+            # This should not usually happen.  The scratch reference
+            # exists, but it is not current.  Perhaps the user gave up on
+            # an attempted merge then switched to another branch.  We want
+            # to delete refname, but only if it doesn't contain any
+            # content that we don't already know.
+            try:
+                self.find_index(commit)
+            except CommitNotFoundError:
+                # It points to a commit that we don't have in our records.
+                raise Failure(
+                    'The scratch reference, %(refname)s, already exists but is not\n'
+                    'checked out.  If it points to a merge commit that you would like\n'
+                    'to use, please check it out using\n'
+                    '\n'
+                    '    git checkout %(refname)s\n'
+                    '\n'
+                    'and then try to continue again.  If it points to a commit that is\n'
+                    'unneeded, then please delete the reference using\n'
+                    '\n'
+                    '    git update-ref -d %(refname)s\n'
+                    '\n'
+                    'and then continue.'
+                    % dict(refname=refname)
+                    )
+            else:
+                # It points to a commit that is already recorded.  We can
+                # delete it without losing any information.
+                self.git.delete_ref(
+                    refname,
+                    'imerge %r: Remove obsolete scratch reference' % (self.name,),
+                    )
+                sys.stderr.write(
+                    '%s did not point to a new merge; it has been deleted.\n'
+                    % (refname,)
+                    )
+                raise NoManualMergeError(
+                    'Reference %s was not checked out.' % (refname,)
+                    )
+
+        # If we reach this point, then the scratch reference exists and is
+        # checked out.  Now check whether there is staged content that
+        # can be committed:
+        if self.git.commit_user_merge(edit_log_msg=edit_log_msg):
+            commit = self.git.get_commit_sha1('HEAD')
+
+        self.git.require_clean_work_tree('proceed')
+
+        merge_frontier = MergeFrontier.map_known_frontier(self)
+
+        # This might throw ManualMergeUnusableError:
+        (i1, i2) = self.incorporate_manual_merge(commit)
+
+        # Now detach head so that we can delete refname.
+        self.git.detach('Detach HEAD from %s' % (refname,))
+
+        self.git.delete_ref(
+            refname, 'imerge %s: remove scratch reference' % (self.name,),
+            )
+
+        try:
+            # This might throw NotABlockingCommitError:
+            unblocked_block = merge_frontier.get_affected_blocker_block(i1, i2)
+            unblocked_block[1, 1].record_blocked(False)
+            sys.stderr.write(
+                'Merge has been recorded for merge %d-%d.\n'
+                % unblocked_block.get_original_indexes(1, 1)
+                )
+        except NotABlockingCommitError:
+            raise
+        finally:
+            self.save()
+
+    def _set_refname(self, refname, commit, force=False):
+        try:
+            ref_oldval = self.git.get_commit_sha1(refname)
+        except ValueError:
+            # refname doesn't already exist; simply point it at commit:
+            self.git.update_ref(refname, commit, 'imerge: recording final merge')
+            self.git.checkout(refname, quiet=True)
+        else:
+            # refname already exists.  This has two ramifications:
+            # 1. HEAD might point at it
+            # 2. We may only fast-forward it (unless force is set)
+            head_refname = self.git.get_head_refname()
+
+            if not force and not self.git.is_ancestor(ref_oldval, commit):
+                raise Failure(
+                    '%s cannot be fast-forwarded to %s!' % (refname, commit)
+                    )
+
+            if head_refname == refname:
+                self.git.reset_hard(commit)
+            else:
+                self.git.update_ref(
+                    refname, commit, 'imerge: recording final merge',
+                    )
+                self.git.checkout(refname, quiet=True)
+
+    def simplify_to_full(self, refname, force=False):
+        for i1 in range(1, self.len1):
+            for i2 in range(1, self.len2):
+                if not (i1, i2) in self:
+                    raise Failure(
+                        'Cannot simplify to "full" because '
+                        'merge %d-%d is not yet done'
+                        % (i1, i2)
+                        )
+
+        self._set_refname(refname, self[-1, -1].sha1, force=force)
+
+    def simplify_to_rebase_with_history(self, refname, force=False):
+        i1 = self.len1 - 1
+        for i2 in range(1, self.len2):
+            if not (i1, i2) in self:
+                raise Failure(
+                    'Cannot simplify to rebase-with-history because '
+                    'merge %d-%d is not yet done'
+                    % (i1, i2)
+                    )
+
+        commit = self[i1, 0].sha1
+        for i2 in range(1, self.len2):
+            orig = self[0, i2].sha1
+            tree = self.git.get_tree(self[i1, i2].sha1)
+
+            # Create a commit, copying the old log message:
+            msg = (
+                self.git.get_log_message(orig).rstrip('\n')
+                + '\n\n(rebased-with-history from commit %s)\n' % orig
+                )
+            commit = self.git.commit_tree(
+                tree, [commit, orig],
+                msg=msg,
+                metadata=self.git.get_author_info(orig),
+            )
+
+        self._set_refname(refname, commit, force=force)
+
+    def simplify_to_border(
+            self, refname,
+            with_history1=False, with_history2=False, force=False,
+            ):
+        i1 = self.len1 - 1
+        for i2 in range(1, self.len2):
+            if not (i1, i2) in self:
+                raise Failure(
+                    'Cannot simplify to border because '
+                    'merge %d-%d is not yet done'
+                    % (i1, i2)
+                    )
+
+        i2 = self.len2 - 1
+        for i1 in range(1, self.len1):
+            if not (i1, i2) in self:
+                raise Failure(
+                    'Cannot simplify to border because '
+                    'merge %d-%d is not yet done'
+                    % (i1, i2)
+                    )
+
+        i1 = self.len1 - 1
+        commit = self[i1, 0].sha1
+        for i2 in range(1, self.len2 - 1):
+            orig = self[0, i2].sha1
+            tree = self.git.get_tree(self[i1, i2].sha1)
+
+            # Create a commit, copying the old log message:
+            if with_history2:
+                parents = [commit, orig]
+                msg = (
+                    self.git.get_log_message(orig).rstrip('\n')
+                    + '\n\n(rebased-with-history from commit %s)\n' % (orig,)
+                    )
+            else:
+                parents = [commit]
+                msg = (
+                    self.git.get_log_message(orig).rstrip('\n')
+                    + '\n\n(rebased from commit %s)\n' % (orig,)
+                    )
+
+            commit = self.git.commit_tree(
+                tree, parents,
+                msg=msg,
+                metadata=self.git.get_author_info(orig),
+            )
+        commit1 = commit
+
+        i2 = self.len2 - 1
+        commit = self[0, i2].sha1
+        for i1 in range(1, self.len1 - 1):
+            orig = self[i1, 0].sha1
+            tree = self.git.get_tree(self[i1, i2].sha1)
+
+            # Create a commit, copying the old log message:
+            if with_history1:
+                parents = [orig, commit]
+                msg = (
+                    self.git.get_log_message(orig).rstrip('\n')
+                    + '\n\n(rebased-with-history from commit %s)\n' % (orig,)
+                    )
+            else:
+                parents = [commit]
+                msg = (
+                    self.git.get_log_message(orig).rstrip('\n')
+                    + '\n\n(rebased from commit %s)\n' % (orig,)
+                    )
+
+            commit = self.git.commit_tree(
+                tree, parents,
+                msg=msg,
+                metadata=self.git.get_author_info(orig),
+            )
+        commit2 = commit
+
+        # Construct the apex commit:
+        tree = self.git.get_tree(self[-1, -1].sha1)
+        msg = (
+            'Merge %s into %s (using imerge border)'
+            % (self.tip2, self.tip1)
+            )
+
+        commit = self.git.commit_tree(tree, [commit1, commit2], msg=msg)
+
+        # Update the reference:
+        self._set_refname(refname, commit, force=force)
+
+    def _simplify_to_path(self, refname, base, path, force=False):
+        """Simplify based on path and set refname to the result.
+
+        The base and path arguments are defined similarly to
+        create_commit_chain(), except that instead of SHA-1s they may
+        optionally represent commits via (i1, i2) tuples.
+
+        """
+
+        def to_sha1(arg):
+            if type(arg) is tuple:
+                commit_record = self[arg]
+                if not commit_record.is_known():
+                    raise MissingMergeFailure(*arg)
+                return commit_record.sha1
+            else:
+                return arg
+
+        base_sha1 = to_sha1(base)
+        path_sha1 = []
+        for (commit, metadata) in path:
+            commit_sha1 = to_sha1(commit)
+            metadata_sha1 = to_sha1(metadata)
+            path_sha1.append((commit_sha1, metadata_sha1))
+
+        # A path simplification is allowed to discard history, as long
+        # as the *pre-simplification* apex commit is a descendant of
+        # the branch to be moved.
+        if path:
+            apex = path_sha1[-1][0]
+        else:
+            apex = base_sha1
+
+        if not force and not self.git.is_ff(refname, apex):
+            raise Failure(
+                '%s cannot be updated to %s without discarding history.\n'
+                'Use --force if you are sure, or choose a different reference'
+                % (refname, apex,)
+                )
+
+        # The update is OK, so here we can set force=True:
+        self._set_refname(
+            refname,
+            self.git.create_commit_chain(base_sha1, path_sha1),
+            force=True,
+            )
+
+    def simplify_to_rebase(self, refname, force=False):
+        i1 = self.len1 - 1
+        path = [
+            ((i1, i2), (0, i2))
+            for i2 in range(1, self.len2)
+            ]
+
+        try:
+            self._simplify_to_path(refname, (i1, 0), path, force=force)
+        except MissingMergeFailure as e:
+            raise Failure(
+                'Cannot simplify to %s because merge %d-%d is not yet done'
+                % (self.goal, e.i1, e.i2)
+                )
+
+    def simplify_to_drop(self, refname, force=False):
+        try:
+            base = self.goalopts['base']
+        except KeyError:
+            raise Failure('Goal "drop" was not initialized correctly')
+
+        i2 = self.len2 - 1
+        path = [
+            ((i1, i2), (i1, 0))
+            for i1 in range(1, self.len1)
+            ]
+
+        try:
+            self._simplify_to_path(refname, base, path, force=force)
+        except MissingMergeFailure as e:
+            raise Failure(
+                'Cannot simplify to rebase because merge %d-%d is not yet done'
+                % (e.i1, e.i2)
+                )
+
+    def simplify_to_revert(self, refname, force=False):
+        self.simplify_to_rebase(refname, force=force)
+
+    def simplify_to_merge(self, refname, force=False):
+        if not (-1, -1) in self:
+            raise Failure(
+                'Cannot simplify to merge because merge %d-%d is not yet done'
+                % (self.len1 - 1, self.len2 - 1)
+                )
+        tree = self.git.get_tree(self[-1, -1].sha1)
+        parents = [self[-1, 0].sha1, self[0, -1].sha1]
+
+        # Create a preliminary commit with a generic commit message:
+        sha1 = self.git.commit_tree(
+            tree, parents,
+            msg='Merge %s into %s (using imerge)' % (self.tip2, self.tip1),
+            )
+
+        self._set_refname(refname, sha1, force=force)
+
+        # Now let the user edit the commit log message:
+        self.git.amend()
+
+    def simplify(self, refname, force=False):
+        """Simplify this MergeState and save the result to refname.
+
+        The merge must be complete before calling this method."""
+
+        if self.goal == 'full':
+            self.simplify_to_full(refname, force=force)
+        elif self.goal == 'rebase':
+            self.simplify_to_rebase(refname, force=force)
+        elif self.goal == 'rebase-with-history':
+            self.simplify_to_rebase_with_history(refname, force=force)
+        elif self.goal == 'border':
+            self.simplify_to_border(refname, force=force)
+        elif self.goal == 'border-with-history':
+            self.simplify_to_border(refname, with_history2=True, force=force)
+        elif self.goal == 'border-with-history2':
+            self.simplify_to_border(
+                refname, with_history1=True, with_history2=True, force=force,
+                )
+        elif self.goal == 'drop':
+            self.simplify_to_drop(refname, force=force)
+        elif self.goal == 'revert':
+            self.simplify_to_revert(refname, force=force)
+        elif self.goal == 'merge':
+            self.simplify_to_merge(refname, force=force)
+        else:
+            raise ValueError('Invalid value for goal (%r)' % (self.goal,))
+
+    def save(self):
+        """Write the current MergeState to the repository."""
+
+        blockers = []
+        for i2 in range(0, self.len2):
+            for i1 in range(0, self.len1):
+                record = self[i1, i2]
+                if record.is_known():
+                    record.save(self.git, self.name, i1, i2)
+                if record.is_blocked():
+                    blockers.append((i1, i2))
+
+        state = dict(
+            version='.'.join(str(i) for i in STATE_VERSION),
+            blockers=blockers,
+            tip1=self.tip1, tip2=self.tip2,
+            goal=self.goal,
+            goalopts=self.goalopts,
+            manual=self.manual,
+            branch=self.branch,
+            )
+        self.git.write_imerge_state_dict(self.name, state)
+
+    def __str__(self):
+        return 'MergeState(\'%s\', tip1=\'%s\', tip2=\'%s\', goal=\'%s\')' % (
+            self.name, self.tip1, self.tip2, self.goal,
+            )
+
+
+def choose_merge_name(git, name):
+    names = list(git.iter_existing_imerge_names())
+
+    # If a name was specified, try to use it and fail if not possible:
+    if name is not None:
+        if name not in names:
+            raise Failure('There is no incremental merge called \'%s\'!' % (name,))
+        if len(names) > 1:
+            # Record this as the new default:
+            git.set_default_imerge_name(name)
+        return name
+
+    # A name was not specified.  Try to use the default name:
+    default_name = git.get_default_imerge_name()
+    if default_name:
+        if git.check_imerge_exists(default_name):
+            return default_name
+        else:
+            # There's no reason to keep the invalid default around:
+            git.set_default_imerge_name(None)
+            raise Failure(
+                'Warning: The default incremental merge \'%s\' has disappeared.\n'
+                '(The setting imerge.default has been cleared.)\n'
+                'Please try again.'
+                % (default_name,)
+                )
+
+    # If there is exactly one imerge, set it to be the default and use it.
+    if len(names) == 1 and git.check_imerge_exists(names[0]):
+        return names[0]
+
+    raise Failure('Please select an incremental merge using --name')
+
+
+def read_merge_state(git, name=None):
+    return MergeState.read(git, choose_merge_name(git, name))
+
+
+def cmd_list(parser, options):
+    git = GitRepository()
+    names = list(git.iter_existing_imerge_names())
+    default_merge = git.get_default_imerge_name()
+    if not default_merge and len(names) == 1:
+        default_merge = names[0]
+    for name in names:
+        if name == default_merge:
+            sys.stdout.write('* %s\n' % (name,))
+        else:
+            sys.stdout.write('  %s\n' % (name,))
+
+
+def cmd_init(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    if not options.name:
+        parser.error(
+            'Please specify the --name to be used for this incremental merge'
+            )
+    tip1 = git.get_head_refname(short=True) or 'HEAD'
+    tip2 = options.tip2
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+
+    merge_state = MergeState.initialize(
+        git, options.name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal=options.goal, manual=options.manual,
+        branch=(options.branch or options.name),
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(options.name)
+
+
+def cmd_start(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    if not options.name:
+        parser.error(
+            'Please specify the --name to be used for this incremental merge'
+            )
+    tip1 = git.get_head_refname(short=True) or 'HEAD'
+    tip2 = options.tip2
+
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+
+    merge_state = MergeState.initialize(
+        git, options.name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal=options.goal, manual=options.manual,
+        branch=(options.branch or options.name),
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(options.name)
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_merge(parser, options):
+    print('merging!!!')
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    tip2 = options.tip2
+
+    if options.name:
+        name = options.name
+    else:
+        # By default, name the imerge after the branch being merged:
+        name = tip2
+        git.check_imerge_name_format(name)
+
+    tip1 = git.get_head_refname(short=True)
+    if tip1:
+        if not options.branch:
+            # See if we can store the result to the checked-out branch:
+            try:
+                git.check_branch_name_format(tip1)
+            except InvalidBranchNameError:
+                pass
+            else:
+                options.branch = tip1
+    else:
+        tip1 = 'HEAD'
+
+    if not options.branch:
+        if options.name:
+            options.branch = options.name
+        else:
+            parser.error(
+                'HEAD is not a simple branch.  '
+                'Please specify --branch for storing results.'
+                )
+
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+        print(f'here with merge_base={merge_base} a={commits1} b={commits2}')
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+    except NothingToDoError as e:
+        sys.stdout.write('Already up-to-date.\n')
+        sys.exit(0)
+
+    merge_state = MergeState.initialize(
+        git, name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal=options.goal, manual=options.manual,
+        branch=options.branch,
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(name)
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_rebase(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    tip1 = options.tip1
+
+    tip2 = git.get_head_refname(short=True)
+    if tip2:
+        if not options.branch:
+            # See if we can store the result to the current branch:
+            try:
+                git.check_branch_name_format(tip2)
+            except InvalidBranchNameError:
+                pass
+            else:
+                options.branch = tip2
+        if not options.name:
+            # By default, name the imerge after the branch being rebased:
+            options.name = tip2
+    else:
+        tip2 = git.rev_parse('HEAD')
+
+    if not options.name:
+        parser.error(
+            'The checked-out branch could not be used as the imerge name.\n'
+            'Please use the --name option.'
+            )
+
+    if not options.branch:
+        if options.name:
+            options.branch = options.name
+        else:
+            parser.error(
+                'HEAD is not a simple branch.  '
+                'Please specify --branch for storing results.'
+                )
+
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+    except NothingToDoError as e:
+        sys.stdout.write('Already up-to-date.\n')
+        sys.exit(0)
+
+    merge_state = MergeState.initialize(
+        git, options.name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal=options.goal, manual=options.manual,
+        branch=options.branch,
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(options.name)
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_drop(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    m = re.match(r'^(?P<start>.*[^\.])(?P<sep>\.{2,})(?P<end>[^\.].*)$', options.range)
+    if m:
+        if m.group('sep') != '..':
+            parser.error(
+                'Range must either be a single commit '
+                'or in the form "commit..commit"'
+                )
+        start = git.rev_parse(m.group('start'))
+        end = git.rev_parse(m.group('end'))
+    else:
+        end = git.rev_parse(options.range)
+        start = git.rev_parse('%s^' % (end,))
+
+    try:
+        to_drop = git.linear_ancestry(start, end, options.first_parent)
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+
+    # Suppose we want to drop commits 2 and 3 in the branch below.
+    # Then we set up an imerge as follows:
+    #
+    #     o - 0 - 1 - 2 - 3 - 4 - 5 - 6    ← tip1
+    #                     |
+    #                     3⁻¹
+    #                     |
+    #                     2⁻¹
+    #
+    #                     ↑
+    #                    tip2
+    #
+    # We first use imerge to rebase tip1 onto tip2, then we simplify
+    # by discarding the sequence (2, 3, 3⁻¹, 2⁻¹) (which together are
+    # a NOOP). In this case, goalopts would have the following
+    # contents:
+    #
+    #     goalopts['base'] = rev_parse(commit1)
+
+    tip1 = git.get_head_refname(short=True)
+    if tip1:
+        if not options.branch:
+            # See if we can store the result to the current branch:
+            try:
+                git.check_branch_name_format(tip1)
+            except InvalidBranchNameError:
+                pass
+            else:
+                options.branch = tip1
+        if not options.name:
+            # By default, name the imerge after the branch being rebased:
+            options.name = tip1
+    else:
+        tip1 = git.rev_parse('HEAD')
+
+    if not options.name:
+        parser.error(
+            'The checked-out branch could not be used as the imerge name.\n'
+            'Please use the --name option.'
+            )
+
+    if not options.branch:
+        if options.name:
+            options.branch = options.name
+        else:
+            parser.error(
+                'HEAD is not a simple branch.  '
+                'Please specify --branch for storing results.'
+                )
+
+    # Create a branch based on end that contains the inverse of the
+    # commits that we want to drop. This will be tip2:
+
+    git.checkout(end)
+    for commit in reversed(to_drop):
+        git.revert(commit)
+
+    tip2 = git.rev_parse('HEAD')
+
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+    except NothingToDoError as e:
+        sys.stdout.write('Already up-to-date.\n')
+        sys.exit(0)
+
+    merge_state = MergeState.initialize(
+        git, options.name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal='drop', goalopts={'base' : start},
+        manual=options.manual,
+        branch=options.branch,
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(options.name)
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_revert(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    m = re.match(r'^(?P<start>.*[^\.])(?P<sep>\.{2,})(?P<end>[^\.].*)$', options.range)
+    if m:
+        if m.group('sep') != '..':
+            parser.error(
+                'Range must either be a single commit '
+                'or in the form "commit..commit"'
+                )
+        start = git.rev_parse(m.group('start'))
+        end = git.rev_parse(m.group('end'))
+    else:
+        end = git.rev_parse(options.range)
+        start = git.rev_parse('%s^' % (end,))
+
+    try:
+        to_revert = git.linear_ancestry(start, end, options.first_parent)
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+
+    # Suppose we want to revert commits 2 and 3 in the branch below.
+    # Then we set up an imerge as follows:
+    #
+    #     o - 0 - 1 - 2 - 3 - 4 - 5 - 6    ← tip1
+    #                     |
+    #                     3⁻¹
+    #                     |
+    #                     2⁻¹
+    #
+    #                     ↑
+    #                    tip2
+    #
+    # Then we use imerge to rebase tip2 onto tip1.
+
+    tip1 = git.get_head_refname(short=True)
+    if tip1:
+        if not options.branch:
+            # See if we can store the result to the current branch:
+            try:
+                git.check_branch_name_format(tip1)
+            except InvalidBranchNameError:
+                pass
+            else:
+                options.branch = tip1
+        if not options.name:
+            # By default, name the imerge after the branch being rebased:
+            options.name = tip1
+    else:
+        tip1 = git.rev_parse('HEAD')
+
+    if not options.name:
+        parser.error(
+            'The checked-out branch could not be used as the imerge name.\n'
+            'Please use the --name option.'
+            )
+
+    if not options.branch:
+        if options.name:
+            options.branch = options.name
+        else:
+            parser.error(
+                'HEAD is not a simple branch.  '
+                'Please specify --branch for storing results.'
+                )
+
+    # Create a branch based on end that contains the inverse of the
+    # commits that we want to drop. This will be tip2:
+
+    git.checkout(end)
+    for commit in reversed(to_revert):
+        git.revert(commit)
+
+    tip2 = git.rev_parse('HEAD')
+
+    try:
+        (merge_base, commits1, commits2) = git.get_boundaries(
+            tip1, tip2, options.first_parent,
+            )
+    except NonlinearAncestryError as e:
+        if options.first_parent:
+            parser.error(str(e))
+        else:
+            parser.error('%s\nPerhaps use "--first-parent"?' % (e,))
+    except NothingToDoError as e:
+        sys.stdout.write('Already up-to-date.\n')
+        sys.exit(0)
+
+    merge_state = MergeState.initialize(
+        git, options.name, merge_base,
+        tip1, commits1,
+        tip2, commits2,
+        goal='revert',
+        manual=options.manual,
+        branch=options.branch,
+        )
+    merge_state.save()
+    if len(list(git.iter_existing_imerge_names())) > 1:
+        git.set_default_imerge_name(options.name)
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_remove(parser, options):
+    git = GitRepository()
+    MergeState.remove(git, choose_merge_name(git, options.name))
+
+
+def cmd_continue(parser, options):
+    git = GitRepository()
+    merge_state = read_merge_state(git, options.name)
+    try:
+        merge_state.incorporate_user_merge(edit_log_msg=options.edit)
+    except NoManualMergeError:
+        pass
+    except NotABlockingCommitError as e:
+        raise Failure(str(e))
+    except ManualMergeUnusableError as e:
+        raise Failure(str(e))
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        merge_state.request_user_merge(e.i1, e.i2)
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_record(parser, options):
+    git = GitRepository()
+    merge_state = read_merge_state(git, options.name)
+    try:
+        merge_state.incorporate_user_merge(edit_log_msg=options.edit)
+    except NoManualMergeError as e:
+        raise Failure(str(e))
+    except NotABlockingCommitError:
+        raise Failure(str(e))
+    except ManualMergeUnusableError as e:
+        raise Failure(str(e))
+
+    try:
+        merge_state.auto_complete_frontier()
+    except FrontierBlockedError as e:
+        pass
+    else:
+        sys.stderr.write('Merge is complete!\n')
+
+
+def cmd_autofill(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+    merge_state = read_merge_state(git, options.name)
+    with git.temporary_head(message='imerge: restoring'):
+        try:
+            merge_state.auto_complete_frontier()
+        except FrontierBlockedError as e:
+            raise Failure(str(e))
+
+
+def cmd_simplify(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+    merge_state = read_merge_state(git, options.name)
+    merge_frontier = MergeFrontier.map_known_frontier(merge_state)
+    if not merge_frontier.is_complete():
+        raise Failure('Merge %s is not yet complete!' % (merge_state.name,))
+    refname = 'refs/heads/%s' % ((options.branch or merge_state.branch),)
+    if options.goal is not None:
+        merge_state.set_goal(options.goal)
+        merge_state.save()
+    merge_state.simplify(refname, force=options.force)
+
+
+def cmd_finish(parser, options):
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+    merge_state = read_merge_state(git, options.name)
+    merge_frontier = MergeFrontier.map_known_frontier(merge_state)
+    if not merge_frontier.is_complete():
+        raise Failure('Merge %s is not yet complete!' % (merge_state.name,))
+    refname = 'refs/heads/%s' % ((options.branch or merge_state.branch),)
+    if options.goal is not None:
+        merge_state.set_goal(options.goal)
+        merge_state.save()
+    merge_state.simplify(refname, force=options.force)
+    MergeState.remove(git, merge_state.name)
+
+
+def cmd_diagram(parser, options):
+    git = GitRepository()
+    if not (options.commits or options.frontier):
+        options.frontier = True
+    if not (options.color or (options.color is None and sys.stdout.isatty())):
+        AnsiColor.disable()
+
+    merge_state = read_merge_state(git, options.name)
+    if options.commits:
+        merge_state.write(sys.stdout, merge_state.tip1, merge_state.tip2)
+        sys.stdout.write('\n')
+    if options.frontier:
+        merge_frontier = MergeFrontier.map_known_frontier(merge_state)
+        merge_frontier.write(sys.stdout, merge_state.tip1, merge_state.tip2)
+        sys.stdout.write('\n')
+    if options.html:
+        merge_frontier = MergeFrontier.map_known_frontier(merge_state)
+        html = open(options.html, 'w')
+        merge_frontier.write_html(html, merge_state.name)
+        html.close()
+    sys.stdout.write(
+        'Key:\n'
+        )
+    if options.frontier:
+        sys.stdout.write(
+            '  |,-,+ = rectangles forming current merge frontier\n'
+            )
+    sys.stdout.write(
+        '  * = merge done manually\n'
+        '  . = merge done automatically\n'
+        '  # = conflict that is currently blocking progress\n'
+        '  @ = merge was blocked but has been resolved\n'
+        '  ? = no merge recorded\n'
+        '\n'
+        )
+
+
+def reparent_recursively(git, start_commit, parents, end_commit):
+    """Change the parents of start_commit and its descendants.
+
+    Change start_commit to have the specified parents, and reparent
+    all commits on the ancestry path between start_commit and
+    end_commit accordingly. Return the replacement end_commit.
+    start_commit, parents, and end_commit must all be resolved OIDs.
+
+    """
+
+    # A map {old_oid : new_oid} keeping track of which replacements
+    # have to be made:
+    replacements = {}
+
+    # Reparent start_commit:
+    replacements[start_commit] = git.reparent(start_commit, parents)
+
+    for (commit, parents) in git.rev_list_with_parents(
+            '--ancestry-path', '--topo-order', '--reverse',
+            '%s..%s' % (start_commit, end_commit)
+            ):
+        parents = [replacements.get(p, p) for p in parents]
+        replacements[commit] = git.reparent(commit, parents)
+
+    try:
+        return replacements[end_commit]
+    except KeyError:
+        raise ValueError(
+            "%s is not an ancestor of %s" % (start_commit, end_commit),
+        )
+
+
+def cmd_reparent(parser, options):
+    git = GitRepository()
+    try:
+        commit = git.get_commit_sha1(options.commit)
+    except ValueError:
+        sys.exit('%s is not a valid commit', options.commit)
+
+    try:
+        head = git.get_commit_sha1('HEAD')
+    except ValueError:
+        sys.exit('HEAD is not a valid commit')
+
+    try:
+        parents = [git.get_commit_sha1(p) for p in options.parents]
+    except ValueError as e:
+        sys.exit(e.message)
+
+    sys.stderr.write('Reparenting %s..HEAD\n' % (options.commit,))
+
+    try:
+        new_head = reparent_recursively(git, commit, parents, head)
+    except ValueError as e:
+        sys.exit(e.message)
+
+    sys.stdout.write('%s\n' % (new_head,))
+################33 end of git-imerge
+
+def get_merge_head():
+    try:
+        with open('.git/MERGE_HEAD', 'rb') as fp:
+            merge_head = fp.read().decode('utf8').strip()
+    except FileNotFoundError:
+        return None
+    if len(merge_head) == 40:
+        return merge_head
+    return None
+
+def get_head():
+    return get_sha('HEAD')
+
+def get_sha(branch):
+    return subprocess.check_output(['git', 'rev-parse', branch], shell=False, env=None).decode('utf8').strip()
+
+def get_merge_base(a, b):
+    return subprocess.check_output(['git', 'merge-base', a, b], shell=False, env=None).decode('utf8').strip()
+
+def blame(path):
+    out = subprocess.check_output(f'git blame --porcelain {path}', shell=True).decode('utf8')
+    sha = None
+    existing_sha = False
+    lines = []
+    shas = {}
+    for line in out.splitlines():
+        if sha is None:
+            splits = line.split()
+            if len(splits) == 4:
+                splits = splits[:3]
+            # orig_n is the line number where the line came from in sha
+            sha, orig_n, final_n = splits
+            assert int(final_n) == (len(lines)+1)
+            existing_sha = bool(sha in shas)
+            if not existing_sha:
+                sha_details = {}
+            continue
+        if not existing_sha:
+            k, v = line.split(maxsplit=1)
+            sha_details[k] = v
+            if k == 'filename':
+                existing_sha = True
+                shas[sha] = sha_details
+            continue
+        assert line.startswith('\t')
+        line = line[1:]
+        lines.append({
+            'commit': sha,
+            'commit_details': shas[sha],
+            'line_in_commit': orig_n,
+            'line_current': final_n,
+            'line': line,
+            })
+        sha = None
+    return lines
+
+def is_clean():
+    output = subprocess.check_output(['git', 'status', '--short'], shell=False, env=None).decode('utf8').strip()
+    return output == ''
+
+def get_commits(a, b):
+    print(f'git log --oneline {a}~1 {b}')
+    log = subprocess.check_output(['git', 'log', '--pretty=tformat:%H %s', f'{a}~1', b], shell=False, env=None).decode('utf8').strip()
+    commits = []
+    for commit in log.splitlines():
+        sha1, msg = commit.split(maxsplit=1)
+        commits.append((sha1, msg))
+    return commits
+
+
+def is_commit(sha):
+    return sha and sha != '0000000000000000000000000000000000000000'
+
+def trim_str(s, n=20):
+    if len(s) <= n or n <= 3:
+        return s
+    return s[:-3] + '...'
+
+
+SECTION_NONE = object()
+SECTION_LOCAL = object()
+SECTION_REMOTE = object()
+
+changes_prefix = '!! changes from'
+
+def get_shas_and_text(sections, lines):
+    out = []
+    shas = {}
+    for section in sections:
+        if section['type'] == 'text':
+            for line_num, line in section['text']:
+                out.append(line)
+                commit = lines[line_num]['commit']
+                shas[commit] = 1
+        elif section['type'] == 'diff':
+            shas2, out2 = get_shas_and_text(section['a'], lines)
+            shas.update(shas2)
+            out.extend(out)
+            shas2, out2 = get_shas_and_text(section['b'], lines)
+            shas.update(shas2)
+            out.extend(out)
+        else:
+            assert 0
+    return shas, ''.join(out)
+
+
+def format_blame(lines, local_url_prefix='', remote_url_prefix=''):
+    commit_lookup = {}
+    for l in lines:
+        commit = l['commit']
+        if is_commit(commit):
+            commit_lookup[commit] = l['commit_details']
+
+    out = []
+    def add_commits(section_type, commits):
+        nonlocal out
+        details = []
+        for commit in commits:
+            if is_commit(commit):
+                commit_details = commit_lookup[commit]
+                author = commit_details['author']
+                author_date = datetime.datetime.utcfromtimestamp(int(commit_details['author-time'])).isoformat()
+                author_summary = trim_str(commit_details['summary'], n=60)
+                url = None
+                if section_type == SECTION_LOCAL:
+                    url = local_url_prefix + commit + ' '
+                elif section_type == SECTION_REMOTE:
+                    url = remote_url_prefix + commit
+                else:
+                    assert 0
+
+                details.append({
+                    'url': url,
+                    'author': author,
+                    'author_date': author_date,
+                    'author_summary': author_summary,
+                    })
+
+        first_commit_details = True
+        for detail in sorted(details, key=lambda x: x['author_date'], reverse=True):
+           if not first_commit_details:
+               out.append('!!\n')
+           out.append(f'{changes_prefix} {url}\n!!  by {author} at {author_date}\n!!  {author_summary}\n')
+           first_commit_details = False
+
+
+    s = '\n'.join(x['line'] for x in lines)
+    sections = diffparse(s)
+    for section in sections:
+        if section['type'] == 'text':
+            out.append(''.join(x[1] for x in section['text']))
+        elif section['type'] == 'diff':
+            commits, out2 = get_shas_and_text(section['a'], lines)
+            out.append('<<<<<<\n')
+            add_commits(SECTION_LOCAL, commits)
+            out.extend(out2)
+            commits, out2 = get_shas_and_text(section['b'], lines)
+            out.append('======\n')
+            add_commits(SECTION_REMOTE, commits)
+            out.extend(out2)
+            out.append('>>>>>>\n')
+        else:
+            assert 0
+    return ''.join(out)
+
+def get_changed_paths():
+    out = subprocess.check_output('git diff --name-status --diff-filter=U', shell=True).decode('utf8')
+    paths = []
+    for l in out.splitlines():
+        _, path = l.split('\t')
+        if os.path.isfile(path):
+            paths.append(path)
+    return paths
+
+
+def beast_move(src, dst):
+    with open(src, 'rb') as fp:
+        src_lines = fp.read().decode('utf8').splitlines()
+    out = []
+    ignore = False
+    for l in src_lines:
+        if l.startswith(changes_prefix):
+            ignore = True
+        elif l.startswith('!!') and ignore:
+            pass
+        else:
+            out.append(l)
+
+    out = '\n'.join(out) + '\n'
+    with open(dst, 'wb') as fp:
+        fp.write(out.encode('utf8'))
+
+def has_beast_marks(path):
+    with open(path, 'rb') as fp:
+        s = fp.read().decode('utf8')
+    assert changes_prefix not in s
+
+
+def md5(fname):
+    hash_md5 = hashlib.md5()
+    with open(fname, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+def die(*args, **kwargs):
+    eprint(*args, **kwargs)
+    sys.exit(1)
+
+def file_exists(path, sha):
+    cmd = f'git cat-file -e {sha}:{path}'
+    res = subprocess.run(cmd, shell=True, env=None, capture_output=True)
+    if not res.returncode:
+        assert not res.stdout
+        return True
+    output = res.stderr.decode('utf8')
+    assert 'Not a valid object name' in output
+    return False
+
+def checkout_versions(path, head, base, merge_head):
+    for (sha, sha_id) in (
+            (head, 'head'),
+            (base, 'base'),
+            (merge_head, 'merge_head'),
+            ):
+        if sha:
+            cmd = f'git show {sha}:{path} > {path}.merge-helper.{sha_id}'
+        else:
+            cmd = f'echo "" > {path}.merge-helper.{sha_id}'
+        subprocess.check_call(cmd, shell=True, env=None, stdout=sys.stderr.buffer)
+
+def format_commits(commits, shor_sha_len=8):
+    out = []
+    for sha1, msg in commits:
+        short_sha1 = sha1[:shor_sha_len]
+        out.append(f' - {short_sha1} - {msg}')
+    return '\n'.join(out)
+
+def format_commits_no_msg(commits, shor_sha_len=8):
+    out = []
+    for sha1 in commits:
+        short_sha1 = sha1[:shor_sha_len]
+        out.append(f' - {short_sha1}')
+    return '\n'.join(out)
+
+def squash(base, branch):
+    subprocess.check_output(['git', 'checkout', branch], shell=False, env=None).decode('utf8').strip()
+    subprocess.check_output(['git', 'checkout', '-b', 'squashed'], shell=False, env=None).decode('utf8').strip()
+
+    print(['git', 'reset', '--soft', base])
+    #subprocess.check_output(['git', 'reset', '--soft', base], shell=False, env=None).decode('utf8').strip()
+    #subprocess.check_output(['git', 'commit', '-m', 'squashed'], shell=False, env=None).decode('utf8').strip()
+    #head = get_head()
+    #return head
+
+def prompt(msg, default=None):
+    yes = ("yes", "y")
+    no = ("no", "n")
+
+    if default is None:
+        msg += " [yes/no]"
+    elif default.lower() in yes:
+        msg += " [Yes/no]"
+    elif default.lower() in  no:
+        msg += " [yes/No]"
+    else:
+        raise ValueError(default)
+
+    while True:
+        answer = input(msg)
+        if answer == '' and default:
+            answer = default
+        if answer.lower() in yes:
+            return True
+        if answer.lower() in no:
+            return False
+
+def check_output(cmd, print_cmd=True):
+    if print_cmd:
+        print(cmd)
+    out = subprocess.check_output(cmd, shell=False, env=None).decode('utf8')
+    return out
+
+def main():
+
+    parser = argparse.ArgumentParser(description='help merging')
+    parser.add_argument('--squash-branch', action='store_true', help='squash branch to single commit before merging')
+    parser.add_argument('branch', help='git branch to merge in')
+    args = parser.parse_args()
+
+    if get_merge_head():
+        die('git merge is currently in process; acbmerge must be run in a clean git state')
+
+    if not is_clean():
+        die('git directory must be clean')
+
+    head = get_head()
+    branch = get_sha(args.branch)
+    base = get_merge_base(head, branch)
+
+    if head == branch:
+        die('head and branch are the same; nothing to merge')
+
+    print(f'merging head={head}; base={base}; branch={branch}')
+
+
+    git = GitRepository()
+    git.require_clean_work_tree('proceed')
+
+    merge_base, head_commits, branch_commits = git.get_boundaries(head, branch, True)
+    assert merge_base == base == '12cfc87450c8d4fc31c8c0a09981e4c3fb3e4d9f'
+
+    print('commits on head line to merge:')
+    print(format_commits_no_msg(head_commits))
+
+    print('merging in commits on branch')
+    print(format_commits_no_msg(branch_commits))
+    print(f'direct merge of {branch}')
+
+    sha_to_merge = branch
+
+    for commit in head_commits:
+        print(f'=== {commit} ===')
+        out = check_output(['git', 'checkout', commit])
+        print(out)
+
+        print(f'=== merging ===')
+        auto_merge = True
+        failed = False
+        try:
+            out = check_output(['git', 'merge', '--no-commit', sha_to_merge])
+        except:
+            failed = True
+            auto_merge = False
+        print(out)
+
+        if failed:
+            prompt('merge failed, fix it then press any key')
+
+
+        print(f'=== running tests ===')
+        failed=False
+        cmd = ['hack/binaries']
+        cmd = ['go', 'build', './...']
+        try:
+            out = check_output(cmd)
+        except:
+            failed=True
+            auto_merge = False
+        print(out)
+
+        if auto_merge:
+            print(f'=== auto committing ===')
+            out = check_output(['git', 'commit', '--no-edit'])
+            print(out)
+        else:
+            print(f'ERROR: hack/binaries failed! fix it before committing the merge')
+            prompt('post merge test failed, fix it then press any key')
+
+
+        while True:
+            try:
+                git.require_clean_work_tree('proceed')
+                break
+            except:
+                if not prompt('git must be clean before proceeeding; continue?'):
+                    os.exit(1)
+
+        sha_to_merge = get_head()
+
+# auto resolve ides:
+# rm -f go.sum vendor/modules.txt
+# go clean -modcache
+# go mod tidy
+
+# git checkout 8e88c5d2705fdb63fca4d392966a4b43087ac621 -- vendor/modules.txt go.mod go.sum
+# echo 'replace github.com/tonistiigi/fsutil => github.com/earthly/fsutil v0.0.0-20210609160335-a94814c540b2' >> go.mod
+# go mod download
+
+
+    #if args.squash_branch:
+    #    assert len(branch_commits) >= 2
+    #    a = branch_commits[1][0]
+    #    b = branch_commits[-1][0]
+    #    print(f'squashing all commits between {a}..{b}')
+    #    squash(a, b)
+    #    asdf
+
+
+    #print(f'merging head={head}; base={base}; branch={branch}')
+
+    #assert head_commits[0][0] == branch_commits[0][0]
+
+    #print('bass commit:')
+    #format_commits(branch_commits[:1])
+
+    #print('commits on head line to merge:')
+    #print(format_commits(head_commits))
+
+    #print('commits on branch line to merge:')
+    #print(format_commits(branch_commits))
+
+
+# TODO must merge 0c5957812fa573911f0076cd37eb909dfd1fa4af', 'f8962cbf17f952e82cd6360a1239ac565a5332a3', 'a4f2dad4c0e5435d955f187f58abaeaa61736081', 'c896a903b73a001a756c8d40330874451dbe38c4', '00025901bf6b30a374e68eecf9fab9c28554bd25', '467c8f234418855e8622f521e81aa5ca28f5d636', '199ad6a5c213d2a6937ced9e2b52b5b57e0a3a37', 'c409b3def8a45b8a3f0d2b3cb125b109a2cb2c83', 'f3e6e961bd6453092883d2bab4b905d14cd949ce into single commit
+
+#merge_base=12cfc87450c8d4fc31c8c0a09981e4c3fb3e4d9f
+# a=['0c1333704052b1b6f12ce29c3c955efe0ca340a2', '8e88c5d2705fdb63fca4d392966a4b43087ac621', 'd458fb3043eb37f3120e8b71cc6424ea27cbcf36', '817955dc8dfebcb973b3c5fde35bbdd7d86be7c2', '04be2c3eaf8bc5b6e471151b9d3c3fdaf47908c0', '67953d67c0c36477c54f60e398d19e8b6fcb6668', '884578f4792d7c5868aea21d9a8cb3d331774de8', '03af083def96bca44ea88fc01e5f47155138903d', '7e4e6768f379b117a1b6580253fb4da50a8648be', '8993c692665b7e8a3106bdf43d03ae70c6b05f0e', '0de03b421a8b39dccead666802f6416d042cf873', '0f9f55ff7ce061b1a089681cdc889c564bf9749b', '4518627f4faad6d5ee048fc243eb5e573068b851', 'b0c769b97eb8ea29e3ce1a8c0a8d230b88256c9a', '5648df8bcc73f582d44b31309db652d251e5e577', '59d2f76e5ea1e6f696e4648691bde5d0edb6f781', '6a4a14b5940847cc6361daad753671df48d771ca', 'b9d5a8f09a4eae0e1767635f48b135113b0f5271', '9f254e18360a24c2ae47b26f772c3c89533bcbb7', '2ccc0e2dde46feeed594a719d144564d90e7736c', '0164c0691d2fe99b70d77fc321a2d570ca53f58e', 'b6b07d167b8d96ff756355a21a319621dd293a84', '87c757fe930f1929cc30010a4ec0327234a2b6f0', '1e623f94f5dd602386476474dedef65b8b5e7e8b', '573f1b125579e7994f8b16fa93c46a818868ac0c', '6409a07898817f9ccfd7d889a961897df429ebc5', '1c037fd52f3481aded331ee74bff7cb1b4d99be6', '215e151d8f442f8582362e4b74e69a948b3383fc', '4e0a5733a3db4a23d7523af1ede8b4b429bc91d3', '103ad93439573877aaa5bb022eb4644bad799e93', '6eab36ddcabf3952fea78c8972f880d06a0b4654', '63b1249c3f6c56d2c1dab8116335fe7979e1a823', '8d33bbdeb5f7ab21c3510bf7d996aaa02afe5006', 'f4fcba58837c49433afaa0e23b710d3e73a66e37', 'bb6f11c28d55ddfb912f285f26cb5159820482fd', '921b0de92ecb9276952a8ed0dd7646aad9a786c6', 'be8ab28a0ab1f7eafa4c551a86d5aafaed7c99c2', '8d70a9e098d6374b304d1a40d7d28557529fbc56', 'edc28d1b028bcf240039134dae3176f174e71130', '5840ec0de182fc1ae0040124e5a0dd7b7c4b0402', '521727e9e20fbcb87ed122794d6a4cad6fdc7ad8', '7d386663ec044f6e3cdb4a829d4628d813f5b06e', '3c4f73768b72479d8db7808ad31b4d028c71c24b', 'f5c34a05b8723664e3ea7a08ee90e779d534769d', '9cf28dcf26408aad76b07578c3e29dbfd1dfe586', '1a7543a105272362da388625c9192f79acc96cef', '4f9ea010c077446db477349f23a5fa240ae4efb5', '5fc0b3c30a9a8de8e9869261d057ede1336526ae', 'f7452db24e64ae28cf52a0358eec9198805a580d', 'b055d2d55c7351fa4745e84781a157fac6fc5265', '6802f708efd986552da7d7cc08c4efd56dd55b5a', '6076d93cdfd687c3f7da3d49806094297ffc3023', '9df59934cd2327f4cbfbb58944d9650ff42568c5', 'f02412098f8c88ec293a168e813f2fb70c3c24d1', '64dd6d55209057e336d34cf55d7c4b5a06d6ae56', 'b93b5b62d12ae656ef82a7218f9380278261373f', '4367890e518631cac427e228d3c6b79d85a08875', '03048216e30f062d2bee7c2e327762d241789eda', '3f0d4a4662fcb10153b64cac557e5471044ac1cb', '1018595476d108905632ce31d7ad91495b553fc8', '06e8602caa280ca2ff1225ea0218456c845fc485', 'd3cd28f59f4d1637490955704b2cec131bb2dc1f', '3ac0e10c0bfeb2a61f832a8d911157c346684171', '9269ec5c952715e3c91d19a229a7d9950cdef6eb', '2a4577efabed1b4404e2884ef56873b8c0a42e95', '699121c00aeb45c066a0396a02669d29c4a4b9a7', 'd2d18d5b5fc6975c50ac4f7db3ae5a0e75a902aa', 'a1818323d453732edb37c6012f82d9191d24b79b', '66d30551db47dda9f74281cb56bcb3e82bff7904', '4b01f8cc94a1c0d38aee0ad9532779dc91eae388', '3790ea3f716f9f6ea031dd97ace196b2e6577ffc', 'dc397eae4a40143cf47c741331b5711c22d82d05', 'c8bb937807d405d92be91f06ce2629e6202ac7a9', '6c637640544132df322b7470c613bbc0b271aa31', '1879325ec570a6c9dfd8f0670d700335fa6a0cb4', 'aa217249da0f50cc7a22d5d6b5b55f8dd9e5310d', 'ed19fe92c2fbc43f243491eccf451c413c866629', '94c0e9d2b97ac5179e8053a53bc5ffd91d91eaaa', 'b2195cec759428a7775a6fe01799b961d14a81bc', '54302c477b6328e0f823768599f149641350dbe0', '1ba8f965c1913b6106948a010f10dce66a25de3d', '8c64153810c5f2802d9c92a13e92bab0b18a2b41', 'a83721aa6a2f538f4e58ada06aa76688ad39c147', 'e37dccd138044ccaf041c6e60ac690d84399189d', '1a7c4807cd29a2e20cb05cb0a50979ec7c616bb6', 'fc3c1821711153ba8f39bf4d523d7ec83ecb7379', 'fd8823e70da62c9d3ea814b2a723ecd8b786be31', '3009c7b6da77b8e03636bf059756b3f661828dbd', '6034f46c3eba1dc9469fc8ae1a62f790253821b7', '175e8415e38228dbb75e6b54efd2c8e9fc5b1cbf', '448dfad55ea1d1dea9e62a900b31f825e3739ac1', '2bd37c8a7dae58b5bd56597f2b467c6c05fe97ff', '533a2024f06322f6c0327ce43cba9798ba242e5c', 'e8a3bb398f87389a85092d8867f2b207e593dd31', 'f6ac37d027fc42d95bdafb66b85dcc547cd486c5', '7658c78597b48b4a6601d1964e0d7f392aef51ae', '124126e7517d5dfdf5695a7eb8e357b9743d1e61', '7fa9e5778c17d4e5bf185dd5aaba393db44db4a4', '99368b8ecc4b7d15c72e53ba724c794ad88b878e', 'd71e905ad108a030fe0db0c557d50528865d390c', 'f314c4bd0375b97d711d9cfe3898463238f9fff9', '94e9d1535a0283fd78cd90ed60df0231dc2e68d5', '89ebbe5d34c475ab62f09531e3415129eb6d934d', '9462a2399bc22540a9dc63546139aa5252029c42', 'ebd5157fe57c1eb708ed85654359df1ec3a51806', 'cf80727e5c21dcbb51cbec76d470d423d1afe9b9', '9b010e774d851bd5eb29965b4eceaef3803f8dfe', 'ea773f6a9baf032890d2a803f7e2cdbfbb689b1d', '91d2f2dc170a1dbcd1b5cc085e440353b138959e', 'f5eb400a857e5e5a74323bfdeae70875fe2755c6', 'e07f3883e343ab311ca96be8ca9be3619ed27db7', '252d7cac94cf5c69c4b7d23142a4650927846b89', '8f2e691b19969f3bc2737d98054d26f8e7c37619', 'a0afb6902ad2014f702f196ae2e597c1768a763b', '7fb8e744227f47e5ac3d53a5016d476de22e3c5a', 'e878d4d823895c2d705c0f76ab8a5ef727610dc0', '44891f4cb975ac70d62d40139ba819fe855da59c', '4997b57f1d92eeff54849eadba39a3136bbdfdf4', 'ec787d91c8edf7983301825ee92dd194ab10e2ca', 'deb1440fe6950557646e40ca3c8807bd52797f32', '1031116f12ec6f80c11782c93a48891f848168b9', '23c8affb1ffe9ae3f58e54493deebadeeb633887', '509b73d91e79e94ba76be35bb90a704226c7d6cd', 'e839ff729b2d071b9f45ff4e1a63535dd539df75', 'b8e4ed18713a1a8b006d1241971a78c137c21c0b', '42aefeb694d75196d710152acc1fb5cb8741e929', 'd429b0b32606b5ea52e6be4a99b69d67b7c722b2', 'ee1ad6893a0a7a2c0a72d82b3ba7a86c46794122', '10947b040c9b013bcb648581bd23e58c32d35007', '78e88560e1a6643534ee668f1e45a72fe7794066', '91ecc991c3424de28023fee35a98e30d90281f7c', 'b2ff444122ff769c13375a8b969cb299a42a9562', 'b8462c3b7c15b14a8c30a79fad298a1de4ca9f74', 'c46f7ad20cf43b8ebc295c7a131aeeaae25024a0', '7671a84fc27995b9cd507190b9e65596a50d3b47', 'ba673bbdab4f5c3be9c43600253321287bec2006']
+# b=['0c5957812fa573911f0076cd37eb909dfd1fa4af', 'f8962cbf17f952e82cd6360a1239ac565a5332a3', 'a4f2dad4c0e5435d955f187f58abaeaa61736081', 'c896a903b73a001a756c8d40330874451dbe38c4', '00025901bf6b30a374e68eecf9fab9c28554bd25', '467c8f234418855e8622f521e81aa5ca28f5d636', '199ad6a5c213d2a6937ced9e2b52b5b57e0a3a37', 'c409b3def8a45b8a3f0d2b3cb125b109a2cb2c83', 'f3e6e961bd6453092883d2bab4b905d14cd949ce']
+
+
+
+if __name__ == '__main__':
+    main()
