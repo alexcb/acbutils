@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+import logging
+import threading
+import time
+import random
+import subprocess
+import sys
+import selectors
+import os
+import io
+
+earthly='/home/alex/bin/earthly'
+
+failure=False
+verbose=False
+
+def thread_function(inst):
+    global failure
+    rand = random.randrange(1,1e9)
+    args = [earthly, "-P", "+my-target-here", f'--CACHE_BUSTER={rand}']
+
+    logpath=f'/tmp/earthly-log.{rand}'
+
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    sel = selectors.DefaultSelector()
+    for fobj in [ proc.stdout, proc.stderr ]:
+        os.set_blocking(fobj.fileno(), False)
+        sel.register(fobj, selectors.EVENT_READ)
+
+    out=io.StringIO()
+    err=io.StringIO()
+
+    f = open(logpath, 'w')
+
+    while len(sel.get_map()) > 0:
+        events = sel.select()
+        if len(events) == 0:
+            proc.terminate()
+            break
+        for key, _ in events:
+            buf = key.fileobj.read().decode(errors='ignore')
+            if buf == '':
+                sel.unregister(key.fileobj)
+            elif key.fileobj == proc.stdout:
+                if verbose:
+                    sys.stdout.write(buf)
+                    sys.stdout.flush()
+                    out.write(buf)
+                f.write(buf)
+            elif key.fileobj == proc.stderr:
+                if verbose:
+                    sys.stderr.write(buf)
+                    sys.stderr.flush()
+                    err.write(buf)
+                f.write(buf)
+
+    f.close()
+
+    sel.close()
+    proc.wait()
+    if proc.returncode != 0:
+        failure=True
+        print(f'FAILURE: {args}; exit code: {proc.returncode}; log: {logpath}')
+    else:
+        print(f'pass: {args}; log: {logpath}')
+
+if __name__ == "__main__":
+    num_instances = 50
+    threads = [threading.Thread(target=thread_function, args=(i,)) for i in range(num_instances)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if failure:
+        print(f'one or more instances failed')
+        sys.exit(1)
